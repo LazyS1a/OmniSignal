@@ -1,0 +1,16 @@
+endpoint: "http://127.0.0.1:8888/search"
+queries:
+  - ChatGPT
+  - Claude
+engines:
+  - duckduckgo
+  - brave
+categories:
+  - general
+language: en-US
+time_range: null
+safe_search: 1
+max_pages: 1
+max_results_per_slice: 10
+request_timeout_seconds: 20
+max_output_bytes: 4000000

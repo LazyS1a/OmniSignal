@@ -1,0 +1,15 @@
+registry_version: 1
+updated_at: 2026-09-03
+targets:
+  - target_id: fixture_owned_client
+    display_name: OmniSignal 自有离线练习样本
+    status: allowed
+    authorization_basis: self_owned
+    authorization_reference: project_charter.md#参考覆盖矩阵
+    authorized_scope:
+      - fixture-protocol-mapping
+    allowed_tools: [ghidra]
+    valid_from: 2026-09-01
+    expires_on: null
+    allows_real_user_data: false
+    owner: project_local

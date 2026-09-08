@@ -1,0 +1,15 @@
+spec_version: "1.0"
+id: relative_search_interest
+display_name: 相对搜索兴趣指数
+kind: relative_trend
+output: relative_index
+time_grain: week
+coverage:
+  source_ids: [fixture_relative_trend]
+  search_engines: [google_trends]
+  regions: [CN]
+  languages: [zh-CN]
+query_set_version: product_terms_v1
+entity_rule_version: product_entities_v1
+numerator: {field: relative_interest, aggregation: sum, label: 来源提供的归一化相对兴趣值}
+description: 保留为相对指数，不能标成搜索量、市场份额或跨搜索引擎百分比。

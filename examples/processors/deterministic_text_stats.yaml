@@ -1,0 +1,22 @@
+sdk_version: "1.0"
+plugin_id: deterministic_text_stats
+plugin_version: "1.0.0"
+entrypoint: omnisignal.testing.processing_plugin:plugin
+runner_sha256: ca0d64c79b358027f598caa6456c00bd2a95f8e0afd340fc8c864bcd066ded97
+output_schema_version: "1.0"
+input_fields: [title, text]
+output_fields: [title_chars, text_chars]
+output_types:
+  title_chars: integer
+  text_chars: integer
+accepted_quality_statuses: [accepted, warning]
+timeout_seconds: 10
+max_batch_records: 100
+max_output_bytes: 1000000
+enabled: true
+approved: true
+trust_level: reviewed_project_code
+network_access: false
+secret_refs: []
+options:
+  mode: ok

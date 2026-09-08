@@ -1,0 +1,16 @@
+spec_version: "1.0"
+id: onsite_query_share
+display_name: 授权站内产品查询占比
+kind: onsite_search
+output: percent
+time_grain: day
+coverage:
+  source_ids: [fixture_onsite_search]
+  regions: [CN]
+  devices: [desktop, mobile]
+  languages: [zh-CN]
+query_set_version: product_terms_v1
+entity_rule_version: product_entities_v1
+numerator: {field: matched_query_count, aggregation: sum, label: 命中产品实体规则的授权站内查询次数}
+denominator: {field: eligible_query_count, aggregation: sum, label: 同期通过隐私与质量规则的站内查询总次数}
+description: 仅用于拥有明确授权的站内查询日志，公开评论与帖子不能冒充查询词。

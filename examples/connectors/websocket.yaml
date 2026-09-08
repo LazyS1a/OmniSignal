@@ -1,0 +1,17 @@
+spec_version: "1.0"
+id: fixture_websocket
+display_name: Local WebSocket fixture
+connector_version: "0.1.0"
+kind: websocket
+risk_level: elevated
+capabilities: [incremental, replay, realtime]
+allowed_targets: ["ws://fixture-websocket.local/events"]
+field_allowlist: [source_record_id, published_at, title, text]
+output_schema_version: "1.0"
+auth: {kind: none}
+pagination: {kind: none, page_size: 100, max_pages: 1}
+extractor: {kind: jmespath, selector: event}
+checkpoint: {strategy: opaque, commit_every: 100}
+deletion: {mode: none, target_hours: 24}
+isolation: {mode: process, kill_switch: true}
+limits: {timeout_seconds: 60, max_attempts: 3, requests_per_minute: 600, max_concurrency: 1, max_records_per_run: 10000}

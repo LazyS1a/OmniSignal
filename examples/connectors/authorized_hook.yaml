@@ -1,0 +1,17 @@
+spec_version: "1.0"
+id: fixture_hook
+display_name: Authorized mock Hook runner
+connector_version: "0.1.0"
+kind: experimental_authorized
+risk_level: high
+capabilities: [incremental, replay, authorized_hook]
+allowed_targets: ["mock-process://fixture-only"]
+field_allowlist: [source_record_id, published_at, title, text]
+output_schema_version: "1.0"
+auth: {kind: none}
+pagination: {kind: none, page_size: 50, max_pages: 1}
+extractor: {kind: plugin, entrypoint: "omnisignal.testing.authorized_hook_worker:main"}
+checkpoint: {strategy: opaque, commit_every: 50}
+deletion: {mode: none, target_hours: 24}
+isolation: {mode: process, kill_switch: true}
+limits: {timeout_seconds: 30, max_attempts: 1, requests_per_minute: 30, max_concurrency: 1, max_records_per_run: 1000}

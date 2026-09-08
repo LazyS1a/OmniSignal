@@ -1,0 +1,17 @@
+spec_version: "1.0"
+id: fixture_browser
+display_name: Local browser fixture
+connector_version: "0.1.0"
+kind: browser
+risk_level: elevated
+capabilities: [replay, browser_render]
+allowed_targets: ["http://fixture-dynamic.local/feed"]
+field_allowlist: [source_record_id, url, published_at, title, text]
+output_schema_version: "1.0"
+auth: {kind: none}
+pagination: {kind: infinite_scroll, page_size: 20, max_pages: 10}
+extractor: {kind: css, selector: article}
+checkpoint: {strategy: opaque, commit_every: 20}
+deletion: {mode: full_resync, target_hours: 24}
+isolation: {mode: process, kill_switch: true}
+limits: {timeout_seconds: 60, max_attempts: 2, requests_per_minute: 6, max_concurrency: 1, max_records_per_run: 1000}

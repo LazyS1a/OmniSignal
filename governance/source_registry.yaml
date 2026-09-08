@@ -1,0 +1,351 @@
+registry_version: 1
+updated_at: "2026-09-03"
+
+# 真实来源不得直接复制这些默认值。status 变为 allowed 前，必须逐项确认授权、字段、频率和删除方式。
+defaults:
+  raw_retention_days: 30
+  normalized_retention_days: 180
+  operational_log_retention_days: 90
+  security_audit_retention_days: 365
+  backup_retention_days: 30
+  deletion_target_hours: 24
+  external_processing: disabled
+
+classifications:
+  public: "允许公开的内容或完全合成的测试数据"
+  internal: "运行元数据、配置版本和非敏感统计"
+  restricted: "授权后才可查看的原文、用户表达或业务数据"
+  secret: "凭证、Cookie、Token、私钥和签名材料；禁止进入采集记录"
+
+field_catalog:
+  visibility_snapshot:
+    origin: source_and_deterministic_processor
+    purpose: "有界视频检索快照：查询、采集时间、版本、视频链接/标题/频道ID、匹配证据、有效分母和采样比例；最多50条"
+    classification: restricted
+  source_record_id:
+    origin: source
+    purpose: "幂等去重、更新和来源删除定位"
+    classification: internal
+  url:
+    origin: source
+    purpose: "证据回链和允许范围校验"
+    classification: public
+  published_at:
+    origin: source
+    purpose: "时间窗口和增量同步"
+    classification: public
+  collected_at:
+    origin: system
+    purpose: "新鲜度、审计和重放定位"
+    classification: internal
+  query:
+    origin: source_or_connector_input
+    purpose: "记录授权查询词或采集入口；不得把帖子文本伪装成搜索词"
+    classification: restricted
+  title:
+    origin: source
+    purpose: "检索和记录识别"
+    classification: public
+  text:
+    origin: source
+    purpose: "保存允许范围内的正文证据"
+    classification: restricted
+  engagement:
+    origin: source
+    purpose: "保留来源提供的中立互动计数"
+    classification: public
+  language:
+    origin: source_or_processor
+    purpose: "语言过滤和质量检查"
+    classification: internal
+  target_entity:
+    origin: controlled_config_or_processor
+    purpose: "按已配置实体查询，不输出产品判断"
+    classification: internal
+  raw_hash:
+    origin: system
+    purpose: "完整性校验、去重和重放比较"
+    classification: internal
+  permission:
+    origin: registry
+    purpose: "记录数据使用依据和范围"
+    classification: internal
+  schema_version:
+    origin: system
+    purpose: "兼容、迁移和可重放处理"
+    classification: internal
+  quality_status:
+    origin: system
+    purpose: "隔离字段缺失、漂移和异常记录"
+    classification: internal
+  related_query:
+    origin: source
+    purpose: "保存公开搜索联想词；不等同于搜索次数"
+    classification: public
+  platform:
+    origin: connector_config
+    purpose: "区分 Web Search 与 YouTube Search 的指标口径"
+    classification: internal
+  metric_type:
+    origin: system
+    purpose: "区分相对兴趣与联想排名，禁止伪装成绝对搜索量"
+    classification: internal
+  value:
+    origin: source
+    purpose: "保存来源返回的 0-100 指数或排名整数"
+    classification: public
+  unit:
+    origin: system
+    purpose: "显式记录 index_0_100 或 rank_1_best"
+    classification: internal
+  geo:
+    origin: connector_config
+    purpose: "记录查询地域范围"
+    classification: internal
+  time_window:
+    origin: connector_config
+    purpose: "记录趋势时间窗或每日联想快照"
+    classification: internal
+  observed_at:
+    origin: source_or_system
+    purpose: "记录指标对应日期，不用采集时间冒充观测日期"
+    classification: internal
+  is_partial:
+    origin: source
+    purpose: "标识 Google Trends 未结束周期"
+    classification: internal
+  scope:
+    origin: system
+    purpose: "记录共享尺度或联想快照范围"
+    classification: internal
+  comparison_group:
+    origin: system
+    purpose: "约束只有同一请求内的相对兴趣才可直接比较"
+    classification: internal
+  source_url:
+    origin: source
+    purpose: "回链到公开数据入口"
+    classification: public
+  collector_version:
+    origin: system
+    purpose: "跟踪 pytrends 与联想解析器版本"
+    classification: internal
+  engine:
+    origin: connector_config_and_source
+    purpose: "记录 SearXNG 单引擎切片的来源引擎，不混成无来源的统一排名"
+    classification: internal
+  category:
+    origin: connector_config_and_source
+    purpose: "记录 SearXNG 搜索类别"
+    classification: internal
+  position:
+    origin: system
+    purpose: "记录固定 query-engine 快照中的结果顺序，1 为首位"
+    classification: public
+  sample_complete:
+    origin: system
+    purpose: "标记配置范围内的快照是否无上游故障完成；不表示覆盖平台全部结果"
+    classification: internal
+  deleted_at:
+    origin: source_or_system
+    purpose: "触发级联删除并保留无正文的删除审计"
+    classification: internal
+
+prohibited_fields:
+  - password
+  - access_token
+  - refresh_token
+  - session_cookie
+  - private_key
+  - signing_secret
+  - payment_card
+  - government_id
+  - precise_location
+  - biometric_data
+
+roles:
+  admin: [registry_manage, connector_enable, secret_reference_manage, read, export, delete, audit_read]
+  operator: [connector_enable, read_metadata, delete_request, audit_read]
+  analyst: [read_normalized, export_approved]
+  auditor: [read_metadata, audit_read]
+  connector_worker: [write_scoped_source, checkpoint_scoped_source]
+
+sources:
+  - id: searxng_results
+    display_name: "本机 SearXNG 检索结果快照"
+    connector_class: api
+    status: allowed
+    owner: project_local
+    purpose: "通过本机自建 SearXNG JSON API 采集有界、逐引擎的公开检索结果样本"
+    authorization_basis: "用户控制的本机聚合实例；仅处理所选上游引擎返回的公开结果"
+    terms_reference: "https://docs.searxng.org/dev/search_api.html; each configured upstream engine must be reviewed before activation"
+    robots_policy: obey
+    rate_budget_rpm: 12
+    reviewed_at: "2026-09-06"
+    allowed_targets: ["http://127.0.0.1:8888/search"]
+    credential_ref: null
+    field_allowlist: [source_record_id, query, engine, category, position, url, title, text, published_at, language, time_range, observed_at, scope, source_url, collector_version, sample_complete, quality_status]
+    retention_profile: defaults
+    deletion_mode: registry_request
+    cascade_targets: [raw, normalized, cache, metric_materialization, export_reference, backup_expiry_queue]
+    kill_switch: true
+  - id: youtube_visibility
+    display_name: "YouTube 视频检索采样占比"
+    connector_class: api
+    status: allowed
+    owner: project_local
+    purpose: "匿名视频检索条目采样、确定性标题匹配和官方频道ID识别"
+    authorization_basis: "用户请求公开检索样本；不使用登录账号"
+    terms_reference: "https://www.youtube.com/t/terms; local bounded public search trial"
+    robots_policy: obey
+    rate_budget_rpm: 2
+    reviewed_at: "2026-09-05"
+    allowed_targets: ["https://www.youtube.com/results"]
+    credential_ref: null
+    field_allowlist: [visibility_snapshot]
+    retention_profile: defaults
+    deletion_mode: registry_request
+    cascade_targets: [raw, normalized, cache, export_reference, backup_expiry_queue]
+    kill_switch: true
+  - id: public_search_signals
+    display_name: "匿名公开搜索信号"
+    connector_class: api
+    status: allowed
+    owner: project_local
+    purpose: "采集 Google Web/YouTube 相对搜索兴趣与公开联想排名"
+    authorization_basis: "无需账户即可访问的公开响应；不绕过登录或验证码"
+    terms_reference: "Google Trends and Google Suggest public web responses; review before external deployment"
+    robots_policy: obey
+    rate_budget_rpm: 6
+    reviewed_at: "2026-09-05"
+    allowed_targets:
+      - "https://trends.google.com/trends/*"
+      - "https://suggestqueries.google.com/complete/search"
+    credential_ref: null
+    field_allowlist: [source_record_id, query, related_query, platform, metric_type, value, unit, geo, time_window, observed_at, is_partial, scope, comparison_group, source_url, collector_version, quality_status]
+    retention_profile: defaults
+    deletion_mode: registry_request
+    cascade_targets: [raw, normalized, cache, metric_materialization, export_reference, backup_expiry_queue]
+    kill_switch: true
+
+  - id: fixture_rest
+    display_name: "本地模拟 REST API"
+    connector_class: api
+    status: allowed
+    owner: project_local
+    purpose: "验证分页、游标、限流、幂等和删除同步"
+    authorization_basis: "项目自建合成夹具"
+    allowed_targets: ["http://fixture-rest.local/*"]
+    credential_ref: null
+    field_allowlist: [source_record_id, url, published_at, collected_at, query, title, text, language, target_entity, raw_hash, permission, schema_version, quality_status, deleted_at]
+    retention_profile: defaults
+    deletion_mode: source_tombstone_or_registry_request
+    cascade_targets: [raw, normalized, cache, index, embedding, metric_materialization, export_reference, backup_expiry_queue]
+    kill_switch: true
+
+  - id: fixture_static_html
+    display_name: "本地静态 HTML 夹具"
+    connector_class: html
+    status: allowed
+    owner: project_local
+    purpose: "验证允许列表、字段提取和页面结构漂移"
+    authorization_basis: "项目自建合成夹具"
+    terms_reference: "not_applicable_project_owned_fixture"
+    robots_policy: obey
+    rate_budget_rpm: 12
+    reviewed_at: "2026-09-03"
+    allowed_targets: ["http://fixture-static.local/*"]
+    credential_ref: null
+    field_allowlist: [source_record_id, url, published_at, collected_at, title, text, language, target_entity, raw_hash, permission, schema_version, quality_status, deleted_at]
+    retention_profile: defaults
+    deletion_mode: registry_request
+    cascade_targets: [raw, normalized, cache, index, embedding, metric_materialization, export_reference, backup_expiry_queue]
+    kill_switch: true
+
+  - id: fixture_dynamic_html
+    display_name: "本地动态页面夹具"
+    connector_class: browser
+    status: allowed
+    owner: project_local
+    purpose: "验证浏览器进程隔离、超时和恢复"
+    authorization_basis: "项目自建合成夹具"
+    allowed_targets: ["http://fixture-dynamic.local/*"]
+    credential_ref: null
+    field_allowlist: [source_record_id, url, published_at, collected_at, title, text, language, target_entity, raw_hash, permission, schema_version, quality_status, deleted_at]
+    retention_profile: defaults
+    deletion_mode: registry_request
+    cascade_targets: [raw, normalized, cache, index, embedding, metric_materialization, export_reference, backup_expiry_queue]
+    kill_switch: true
+
+  - id: fixture_hook
+    display_name: "模拟 Hook runner"
+    connector_class: experimental_authorized
+    status: allowed
+    owner: project_local
+    purpose: "验证独立 runner、输出契约、熔断和紧急停用"
+    authorization_basis: "项目自建模拟进程，不接真实程序"
+    terms_reference: "not_applicable_project_owned_fixture"
+    rate_budget_rpm: 30
+    reviewed_at: "2026-09-03"
+    authorization_expires_at: "2027-09-03T00:00:00+08:00"
+    promotion_review_ref: "not_applicable_synthetic_fixture"
+    runner_entrypoint: "omnisignal.testing.authorized_hook_worker:main"
+    runner_sha256: "82e907528c1f3ce5ce529a3423fa5d6a4639e5e91b44884afa17022578ee8263"
+    output_schema_fingerprint: "fcde9721845bcae0057bb490a6ffce919d3f0ff7243c6c06156e0772ba8a2032"
+    allowed_targets: ["mock-process://fixture-only"]
+    credential_ref: null
+    field_allowlist: [source_record_id, published_at, collected_at, title, text, raw_hash, permission, schema_version, quality_status, deleted_at]
+    retention_profile: defaults
+    deletion_mode: registry_request
+    cascade_targets: [raw, normalized, cache, index, embedding, metric_materialization, export_reference, backup_expiry_queue]
+    kill_switch: true
+
+  - id: fixture_metrics
+    display_name: "固定 MetricSpec 数据集"
+    connector_class: file
+    status: allowed
+    owner: project_local
+    purpose: "验证指标分子、分母、覆盖范围和可重复计算"
+    authorization_basis: "项目自建合成夹具"
+    allowed_targets: ["fixtures/metrics/*"]
+    credential_ref: null
+    field_allowlist: [source_record_id, collected_at, query, target_entity, raw_hash, permission, schema_version, quality_status, deleted_at]
+    retention_profile: defaults
+    deletion_mode: registry_request
+    cascade_targets: [raw, normalized, cache, index, embedding, metric_materialization, export_reference, backup_expiry_queue]
+    kill_switch: true
+
+pending_source_template:
+  status: pending
+  owner: null
+  purpose: null
+  authorization_basis: null
+  terms_reference: null
+  robots_policy: obey
+  rate_budget_rpm: null
+  authorization_expires_at: null
+  promotion_review_ref: null
+  runner_entrypoint: null
+  runner_sha256: null
+  output_schema_fingerprint: null
+  allowed_targets: []
+  credential_ref: null
+  field_allowlist: []
+  retention_profile: null
+  deletion_mode: null
+  cascade_targets: []
+  kill_switch: true
+  activation_requires:
+    - named_owner
+    - written_or_account_authorization
+    - terms_or_owner_permission_reference
+    - exact_target_allowlist
+    - field_allowlist_with_purpose
+    - rate_and_schedule_budget
+    - authorization_expiry
+    - isolated_runner_integrity_hash
+    - versioned_output_schema_fingerprint
+    - retention_and_deletion_policy
+    - credential_secret_reference
+    - access_roles
+    - emergency_disable_test

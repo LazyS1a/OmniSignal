@@ -1,0 +1,35 @@
+spec_version: "1.0"
+id: public_search_signals
+display_name: Anonymous public search signals
+connector_version: "0.1.0"
+kind: api
+risk_level: elevated
+capabilities: [incremental, replay]
+allowed_targets:
+  - "https://trends.google.com/trends/"
+  - "https://suggestqueries.google.com/complete/search"
+field_allowlist:
+  - source_record_id
+  - query
+  - related_query
+  - platform
+  - metric_type
+  - value
+  - unit
+  - geo
+  - time_window
+  - observed_at
+  - is_partial
+  - scope
+  - comparison_group
+  - source_url
+  - collector_version
+  - quality_status
+output_schema_version: "1.0"
+auth: {kind: none}
+pagination: {kind: none, page_size: 1000, max_pages: 1}
+extractor: {kind: plugin, entrypoint: omnisignal.connectors.public_search_signals:PublicSearchSignalsConnector}
+checkpoint: {strategy: opaque, commit_every: 1000}
+deletion: {mode: none, target_hours: 24}
+isolation: {mode: process, kill_switch: true}
+limits: {timeout_seconds: 45, max_attempts: 1, requests_per_minute: 6, max_concurrency: 1, max_records_per_run: 1000}

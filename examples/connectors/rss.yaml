@@ -1,0 +1,17 @@
+spec_version: "1.0"
+id: fixture_rss
+display_name: Local RSS fixture
+connector_version: "0.1.0"
+kind: rss
+risk_level: standard
+capabilities: [incremental, replay]
+allowed_targets: ["http://fixture-rss.local/feed.xml"]
+field_allowlist: [source_record_id, url, published_at, title, text]
+output_schema_version: "1.0"
+auth: {kind: none}
+pagination: {kind: none, page_size: 100, max_pages: 1}
+extractor: {kind: xpath, selector: "//item"}
+checkpoint: {strategy: timestamp, commit_every: 100}
+deletion: {mode: none, target_hours: 24}
+isolation: {mode: in_process, kill_switch: true}
+limits: {timeout_seconds: 30, max_attempts: 3, requests_per_minute: 12, max_concurrency: 1, max_records_per_run: 5000}

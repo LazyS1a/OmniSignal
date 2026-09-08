@@ -1,0 +1,9 @@
+keywords: [Different]
+geo: US
+timeframe: today 3-m
+search_property: youtube
+language: en-US
+timezone_minutes: 0
+include_suggestions: true
+max_suggestions: 10
+max_output_bytes: 4000000

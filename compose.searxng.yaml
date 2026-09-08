@@ -1,0 +1,35 @@
+name: omnisignal-searxng
+
+services:
+  searxng:
+    image: docker.io/searxng/searxng:2026.9.5-c7f3080aa
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8888:8080"
+    environment:
+      SEARXNG_BASE_URL: "http://127.0.0.1:8888/"
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?set an ephemeral SEARXNG_SECRET through scripts/start-searxng.ps1}
+    volumes:
+      - type: bind
+        source: ./deploy/searxng/settings.yml
+        target: /etc/searxng/settings.yml
+        read_only: true
+      - type: volume
+        source: searxng-cache
+        target: /var/cache/searxng
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5).close()"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  searxng-cache:

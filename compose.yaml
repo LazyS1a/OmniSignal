@@ -1,0 +1,72 @@
+name: omnisignal
+
+services:
+  db:
+    image: omnisignal-postgres:18.6-alpine3.23
+    build:
+      context: .
+      dockerfile: docker/postgres/Dockerfile
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      POSTGRES_DB: omnisignal
+      POSTGRES_USER: omnisignal
+      POSTGRES_PASSWORD: ${OMNISIGNAL_DB_PASSWORD:?set OMNISIGNAL_DB_PASSWORD before starting}
+    volumes:
+      - type: bind
+        source: ${OMNISIGNAL_DATA_DIR:-./data/postgres}
+        target: /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U omnisignal -d omnisignal"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks: [backend]
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn omnisignal.api.app:create_app --factory --host 0.0.0.0 --port 8000"]
+    environment:
+      OMNISIGNAL_ENV: production
+      OMNISIGNAL_DB_HOST: db
+      OMNISIGNAL_DB_PORT: "5432"
+      OMNISIGNAL_DB_NAME: omnisignal
+      OMNISIGNAL_DB_USER: omnisignal
+      OMNISIGNAL_DB_PASSWORD: ${OMNISIGNAL_DB_PASSWORD:?set OMNISIGNAL_DB_PASSWORD before starting}
+      OMNISIGNAL_LOG_LEVEL: INFO
+      OMNISIGNAL_CONTROL_PRINCIPALS_JSON: ${OMNISIGNAL_CONTROL_PRINCIPALS_JSON:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${OMNISIGNAL_API_PORT:-8010}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks: [backend]
+
+networks:
+  backend:
+    driver: bridge

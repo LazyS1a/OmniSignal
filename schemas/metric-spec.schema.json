@@ -1,0 +1,255 @@
+{
+  "$defs": {
+    "Aggregation": {
+      "enum": [
+        "count",
+        "sum"
+      ],
+      "title": "Aggregation",
+      "type": "string"
+    },
+    "CoverageSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "source_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Ids",
+          "type": "array"
+        },
+        "search_engines": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Search Engines",
+          "type": "array"
+        },
+        "regions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Regions",
+          "type": "array"
+        },
+        "devices": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Devices",
+          "type": "array"
+        },
+        "languages": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Languages",
+          "type": "array"
+        },
+        "top_k": {
+          "anyOf": [
+            {
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Top K"
+        }
+      },
+      "required": [
+        "source_ids"
+      ],
+      "title": "CoverageSpec",
+      "type": "object"
+    },
+    "MetricKind": {
+      "enum": [
+        "owned_search_performance",
+        "serp_visibility",
+        "monitored_site_mentions",
+        "onsite_search",
+        "relative_trend",
+        "composite"
+      ],
+      "title": "MetricKind",
+      "type": "string"
+    },
+    "MetricOutput": {
+      "enum": [
+        "count",
+        "percent",
+        "relative_index",
+        "composite_index"
+      ],
+      "title": "MetricOutput",
+      "type": "string"
+    },
+    "QuantitySpec": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "pattern": "^[a-z][a-z0-9_]{1,63}$",
+          "title": "Field",
+          "type": "string"
+        },
+        "aggregation": {
+          "$ref": "#/$defs/Aggregation"
+        },
+        "label": {
+          "maxLength": 160,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "field",
+        "aggregation",
+        "label"
+      ],
+      "title": "QuantitySpec",
+      "type": "object"
+    },
+    "TimeGrain": {
+      "enum": [
+        "hour",
+        "day",
+        "week",
+        "month"
+      ],
+      "title": "TimeGrain",
+      "type": "string"
+    },
+    "WeightedMetric": {
+      "additionalProperties": false,
+      "properties": {
+        "metric_id": {
+          "pattern": "^[a-z][a-z0-9_]{2,63}$",
+          "title": "Metric Id",
+          "type": "string"
+        },
+        "weight": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1.0,
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Weight"
+        }
+      },
+      "required": [
+        "metric_id",
+        "weight"
+      ],
+      "title": "WeightedMetric",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "spec_version": {
+      "pattern": "^1\\.\\d+$",
+      "title": "Spec Version",
+      "type": "string"
+    },
+    "id": {
+      "pattern": "^[a-z][a-z0-9_]{2,63}$",
+      "title": "Id",
+      "type": "string"
+    },
+    "display_name": {
+      "maxLength": 160,
+      "minLength": 1,
+      "title": "Display Name",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/MetricKind"
+    },
+    "output": {
+      "$ref": "#/$defs/MetricOutput"
+    },
+    "time_grain": {
+      "$ref": "#/$defs/TimeGrain"
+    },
+    "coverage": {
+      "$ref": "#/$defs/CoverageSpec"
+    },
+    "query_set_version": {
+      "pattern": "^[a-zA-Z0-9_.:-]{1,80}$",
+      "title": "Query Set Version",
+      "type": "string"
+    },
+    "entity_rule_version": {
+      "pattern": "^[a-zA-Z0-9_.:-]{1,80}$",
+      "title": "Entity Rule Version",
+      "type": "string"
+    },
+    "numerator": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QuantitySpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "denominator": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/QuantitySpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "components": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WeightedMetric"
+      },
+      "title": "Components",
+      "type": "array"
+    },
+    "description": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Description",
+      "type": "string"
+    }
+  },
+  "required": [
+    "spec_version",
+    "id",
+    "display_name",
+    "kind",
+    "output",
+    "time_grain",
+    "coverage",
+    "query_set_version",
+    "entity_rule_version",
+    "description"
+  ],
+  "title": "MetricSpec",
+  "type": "object"
+}

@@ -1,0 +1,17 @@
+spec_version: "1.0"
+id: fixture_rest
+display_name: Local REST fixture
+connector_version: "0.1.0"
+kind: api
+risk_level: standard
+capabilities: [incremental, replay, deletion_sync]
+allowed_targets: ["http://fixture-rest.local/v1/items"]
+field_allowlist: [source_record_id, url, published_at, title, text, deleted_at]
+output_schema_version: "1.0"
+auth: {kind: none}
+pagination: {kind: cursor, page_size: 100, cursor_field: next_cursor, max_pages: 100}
+extractor: {kind: jmespath, selector: items}
+checkpoint: {strategy: cursor, commit_every: 100}
+deletion: {mode: tombstone, target_hours: 24}
+isolation: {mode: in_process, kill_switch: true}
+limits: {timeout_seconds: 30, max_attempts: 3, requests_per_minute: 30, max_concurrency: 2, max_records_per_run: 10000}

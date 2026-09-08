@@ -1,0 +1,10 @@
+misconfigurations:
+  - id: AVD-DS-0002
+    paths:
+      - "docker/postgres/Dockerfile"
+    expired_at: 2026-12-01
+    statement: >-
+      The Docker Official PostgreSQL entrypoint must start as root to repair
+      ownership on a new bind-mounted PGDATA directory, then execs gosu postgres.
+      Runtime verification on 2026-09-02 showed every PostgreSQL process running
+      as UID 70 and the rebuilt gosu binary passed its privilege-drop self-test.

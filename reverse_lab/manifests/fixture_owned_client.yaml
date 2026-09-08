@@ -1,0 +1,10 @@
+manifest_version: "1.0"
+sample_id: fixture_owned_client_v1
+target_id: fixture_owned_client
+relative_path: samples/fixture_owned_client.txt
+sha256: 38e119c4b4b141129fb528862ad7bc23eb2a1663e43ba774d89100d3e7c9c84b
+source_reference: project-owned synthetic fixture
+acquired_at: 2026-09-03
+purpose: 验证允许清单、样本路径、哈希和审计链路
+contains_real_user_data: false
+contains_secrets: false

@@ -1,0 +1,15 @@
+version: 1
+auto_start: false
+schedules:
+  - id: daily_public_search_example
+    display_name: Daily public search example snapshot
+    task_id: public_search_signals_example
+    status: paused
+    interval_minutes: 1440
+    anchor_utc: "2026-09-07T03:00:00Z"
+  - id: daily_youtube_visibility_example
+    display_name: Daily YouTube visibility example snapshot
+    task_id: youtube_visibility_example
+    status: paused
+    interval_minutes: 1440
+    anchor_utc: "2026-09-07T03:30:00Z"

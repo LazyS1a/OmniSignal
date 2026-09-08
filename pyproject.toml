@@ -1,0 +1,54 @@
+[project]
+name = "omnisignal"
+version = "0.1.0"
+description = "Generic multi-source ingestion and normalization platform"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "alembic==1.19.1",
+  "fastapi==0.141.1",
+  "httpx==0.28.1",
+  "pluggy==1.6.0",
+  "psycopg[binary]==3.3.5",
+  "pydantic==2.13.5",
+  "PyYAML==6.0.3",
+  "SQLAlchemy==2.0.52",
+  "uvicorn[standard]==0.52.4",
+]
+
+[project.optional-dependencies]
+api = [
+  "dlt==1.30.0",
+]
+crawl = [
+  "Scrapy==2.18.0",
+  "trafilatura==2.2.0",
+]
+browser = [
+  "playwright==1.62.0",
+  "Scrapy==2.18.0",
+  "scrapy-playwright==0.0.48",
+]
+signals = [
+  "pytrends==4.9.2",
+  "yt-dlp==2026.8.19",
+]
+orchestration = [
+  "prefect==3.8.4",
+]
+ui = [
+  "streamlit==1.63.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest==9.1.1",
+  "respx==0.23.1",
+]
+
+[tool.uv]
+package = false
+required-version = "==0.12.8"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

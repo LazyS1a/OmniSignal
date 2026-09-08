@@ -1,0 +1,29 @@
+spec_version: "1.0"
+id: github_issue_search
+display_name: GitHub public Issue and PR search
+connector_version: "0.1.0"
+kind: api
+risk_level: standard
+capabilities: [incremental, replay, deletion_sync]
+allowed_targets: ["https://api.github.com/search/issues"]
+field_allowlist:
+  - source_record_id
+  - api_url
+  - html_url
+  - repository_url
+  - number
+  - title
+  - body
+  - state
+  - created_at
+  - updated_at
+  - closed_at
+  - is_pull_request
+output_schema_version: "1.0"
+auth: {kind: none}
+pagination: {kind: link_header, page_size: 50, max_pages: 20}
+extractor: {kind: plugin, entrypoint: omnisignal.connectors.github_issues:GitHubIssueSearchConnector}
+checkpoint: {strategy: opaque, commit_every: 50}
+deletion: {mode: poll, target_hours: 24}
+isolation: {mode: in_process, kill_switch: true}
+limits: {timeout_seconds: 30, max_attempts: 3, requests_per_minute: 10, max_concurrency: 1, max_records_per_run: 1000}

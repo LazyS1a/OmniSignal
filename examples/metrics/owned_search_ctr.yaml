@@ -1,0 +1,17 @@
+spec_version: "1.0"
+id: owned_search_ctr
+display_name: 自有站点搜索结果点击率
+kind: owned_search_performance
+output: percent
+time_grain: day
+coverage:
+  source_ids: [fixture_search_console]
+  search_engines: [google]
+  regions: [CN]
+  devices: [desktop, mobile]
+  languages: [zh-CN]
+query_set_version: product_terms_v1
+entity_rule_version: product_entities_v1
+numerator: {field: clicks, aggregation: sum, label: 合法授权查询产生的点击数}
+denominator: {field: impressions, aggregation: sum, label: 同口径搜索结果展示数}
+description: 只表示自有站点在指定搜索引擎与覆盖范围内的点击率，不代表全网搜索份额。

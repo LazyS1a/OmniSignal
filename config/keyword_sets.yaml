@@ -1,0 +1,17 @@
+version: 1
+keyword_sets:
+  - id: example_ai_assistants
+    version: 1
+    display_name: AI assistants example comparison
+    description: Demonstration terms used to verify the public search signal pipeline.
+    is_example: true
+    queries:
+      - ChatGPT
+      - Claude
+  - id: example_ai_note_taking
+    version: 1
+    display_name: AI note taking example query
+    description: Demonstration query used to verify YouTube result sampling.
+    is_example: true
+    queries:
+      - AI note taking tools

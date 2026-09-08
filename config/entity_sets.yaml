@@ -1,0 +1,22 @@
+version: 1
+entity_sets:
+  - id: example_note_tools
+    version: 1
+    display_name: Note tools example entities
+    description: Demonstration identities only; they are not the user's product or declared competitors.
+    is_example: true
+    entities:
+      - id: example_owned
+        name: Notion (example)
+        role: owned
+        aliases:
+          - Notion
+        official_accounts: {}
+        domains: []
+      - id: example_competitor
+        name: Obsidian (example)
+        role: competitor
+        aliases:
+          - Obsidian
+        official_accounts: {}
+        domains: []

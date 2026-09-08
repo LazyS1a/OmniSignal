@@ -1,0 +1,46 @@
+version: 1
+tasks:
+  - id: public_search_signals_example
+    display_name: 公开搜索信号（示例词）
+    description: 采集 Google Trends 相对热度和 Google Suggest 候选词，不代表真实搜索次数。
+    connector: public_search_signals
+    source_id: public_search_signals
+    policy: examples/policies/public_search_signals.yaml
+    keyword_set:
+      id: example_ai_assistants
+      version: 1
+    entity_set: null
+    access_tier: anonymous_public
+    observation_scope: Google Trends shared-request relative interest and public autocomplete snapshot.
+    is_example: true
+    enabled: true
+  - id: youtube_visibility_example
+    display_name: YouTube 检索可见度（示例词）
+    description: 采样 YouTube 搜索结果，计算样本中的品牌出现次数与占比。
+    connector: youtube_visibility
+    source_id: youtube_visibility
+    policy: examples/policies/youtube_visibility.yaml
+    keyword_set:
+      id: example_ai_note_taking
+      version: 1
+    entity_set:
+      id: example_note_tools
+      version: 1
+    access_tier: anonymous_public
+    observation_scope: yt-dlp YouTube video search sample; geography and ads are not measured.
+    is_example: true
+    enabled: true
+  - id: searxng_results_example
+    display_name: SearXNG 多引擎检索样本（示例词）
+    description: 从本机 SearXNG 按引擎采集固定查询的有限结果样本，不代表搜索次数或全网统一排名。
+    connector: searxng_results
+    source_id: searxng_results
+    policy: examples/policies/searxng_dual_engine.yaml
+    keyword_set:
+      id: example_ai_assistants
+      version: 1
+    entity_set: null
+    access_tier: anonymous_public
+    observation_scope: Self-hosted SearXNG per-engine result snapshots; no search volume or cross-engine global rank.
+    is_example: true
+    enabled: true

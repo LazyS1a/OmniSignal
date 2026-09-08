@@ -1,0 +1,17 @@
+spec_version: "1.0"
+id: youtube_visibility
+display_name: YouTube extracted video search visibility
+connector_version: "0.1.0"
+kind: api
+risk_level: elevated
+capabilities: [replay]
+allowed_targets: ["https://www.youtube.com/results"]
+field_allowlist: [visibility_snapshot]
+output_schema_version: "1.0"
+auth: {kind: none}
+pagination: {kind: none, page_size: 1, max_pages: 1}
+extractor: {kind: plugin, entrypoint: 'omnisignal.connectors.youtube_visibility:YouTubeVisibilityConnector'}
+checkpoint: {strategy: opaque, commit_every: 1}
+deletion: {mode: none, target_hours: 24}
+isolation: {mode: process, kill_switch: true}
+limits: {timeout_seconds: 60, max_attempts: 1, requests_per_minute: 2, max_concurrency: 1, max_records_per_run: 1}

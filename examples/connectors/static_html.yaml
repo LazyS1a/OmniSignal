@@ -1,0 +1,17 @@
+spec_version: "1.0"
+id: fixture_static_html
+display_name: Local static HTML fixture
+connector_version: "0.1.0"
+kind: html
+risk_level: standard
+capabilities: [replay]
+allowed_targets: ["http://fixture-static.local/articles/"]
+field_allowlist: [source_record_id, url, published_at, title, text, quality_status]
+output_schema_version: "1.0"
+auth: {kind: none}
+pagination: {kind: none, page_size: 50, max_pages: 20}
+extractor: {kind: trafilatura, selector: article}
+checkpoint: {strategy: opaque, commit_every: 50}
+deletion: {mode: full_resync, target_hours: 24}
+isolation: {mode: process, kill_switch: true}
+limits: {timeout_seconds: 30, max_attempts: 3, requests_per_minute: 12, max_concurrency: 1, max_records_per_run: 5000}

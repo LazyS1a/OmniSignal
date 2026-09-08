@@ -1,0 +1,18 @@
+spec_version: "1.0"
+id: serp_visibility
+display_name: 固定关键词 SERP 可见度
+kind: serp_visibility
+output: percent
+time_grain: day
+coverage:
+  source_ids: [fixture_serp_monitor]
+  search_engines: [bing]
+  regions: [CN]
+  devices: [desktop]
+  languages: [zh-CN]
+  top_k: 10
+query_set_version: product_terms_v1
+entity_rule_version: product_entities_v1
+numerator: {field: observed_visibility_points, aggregation: sum, label: 实际获得的排名可见度点数}
+denominator: {field: maximum_visibility_points, aggregation: sum, label: 同一关键词集与 Top-K 的理论最高点数}
+description: 只表示固定关键词、地区、设备和 Top-K 中的监测可见度，不代表真实搜索量占比。

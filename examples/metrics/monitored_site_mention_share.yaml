@@ -1,0 +1,15 @@
+spec_version: "1.0"
+id: monitored_site_mention_share
+display_name: 监测网站产品提及占比
+kind: monitored_site_mentions
+output: percent
+time_grain: week
+coverage:
+  source_ids: [fixture_public_site]
+  regions: [global]
+  languages: [zh-CN, en]
+query_set_version: product_terms_v1
+entity_rule_version: product_entities_v1
+numerator: {field: matched_documents, aggregation: count, label: 命中产品实体规则的合格页面数}
+denominator: {field: eligible_documents, aggregation: count, label: 同期实际监测并通过质量规则的页面总数}
+description: 分母仅是登记网站中的合格监测页面，不能命名为全网提及占比。

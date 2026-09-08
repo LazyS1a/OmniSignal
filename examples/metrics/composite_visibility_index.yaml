@@ -1,0 +1,18 @@
+spec_version: "1.0"
+id: composite_visibility_index
+display_name: 显式加权可见度综合指数
+kind: composite
+output: composite_index
+time_grain: week
+coverage:
+  source_ids: [fixture_search_console, fixture_serp_monitor]
+  search_engines: [google, bing]
+  regions: [CN]
+  devices: [desktop]
+  languages: [zh-CN]
+query_set_version: product_terms_v1
+entity_rule_version: product_entities_v1
+components:
+  - {metric_id: owned_search_ctr, weight: 0.4}
+  - {metric_id: serp_visibility, weight: 0.6}
+description: 仅为显式权重配置的综合指数；界面和 API 必须展示组件与权重，不能称为份额。

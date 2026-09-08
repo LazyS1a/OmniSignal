@@ -1,0 +1,16 @@
+# Demonstration only; these brands are not the user's products.
+is_example: true
+query: "AI note taking tools"
+top_k: 10
+language: en
+brands:
+  - id: example_owned
+    name: Notion (example)
+    role: owned
+    aliases: [Notion]
+    official_channel_ids: []
+  - id: example_competitor
+    name: Obsidian (example)
+    role: competitor
+    aliases: [Obsidian]
+    official_channel_ids: []

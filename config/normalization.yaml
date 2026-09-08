@@ -1,0 +1,40 @@
+config_version: "1.0"
+profiles:
+  - source_id: github_issue_search
+    fields:
+      canonical_url: html_url
+      title: title
+      text: body
+      published_at: created_at
+      updated_at: updated_at
+    required_fields: [title]
+    default_language: und
+    min_text_chars: 20
+  - source_id: fixture_static_html
+    fields:
+      canonical_url: url
+      title: title
+      text: text
+      published_at: published_at
+      language: language
+    required_fields: [canonical_url, text]
+    default_language: und
+    min_text_chars: 40
+  - source_id: fixture_hook
+    fields:
+      title: title
+      text: text
+      published_at: published_at
+      language: language
+    required_fields: [text]
+    default_language: und
+    min_text_chars: 20
+entities:
+  - entity_id: omnisignal
+    aliases: [OmniSignal, Omni Signal]
+  - entity_id: github_docs
+    aliases: [GitHub Docs, github/docs]
+duplicate_policy:
+  simhash_distance: 3
+  ngram_size: 3
+  min_content_chars: 40

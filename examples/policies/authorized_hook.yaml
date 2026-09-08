@@ -1,0 +1,4 @@
+protocol_version: "1.0"
+max_output_bytes: 1000000
+circuit_failure_threshold: 2
+runner_options: {mode: ok}

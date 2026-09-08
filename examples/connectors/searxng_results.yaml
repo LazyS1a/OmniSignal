@@ -1,0 +1,35 @@
+spec_version: "1.0"
+id: searxng_results
+display_name: Local SearXNG result snapshots
+connector_version: "0.1.0"
+kind: api
+risk_level: elevated
+capabilities: [incremental, replay]
+allowed_targets:
+  - "http://127.0.0.1:8888/search"
+field_allowlist:
+  - source_record_id
+  - query
+  - engine
+  - category
+  - position
+  - url
+  - title
+  - text
+  - published_at
+  - language
+  - time_range
+  - observed_at
+  - scope
+  - source_url
+  - collector_version
+  - sample_complete
+  - quality_status
+output_schema_version: "1.0"
+auth: {kind: none}
+pagination: {kind: none, page_size: 200, max_pages: 1}
+extractor: {kind: plugin, entrypoint: omnisignal.connectors.searxng_results:SearXNGResultsConnector}
+checkpoint: {strategy: opaque, commit_every: 200}
+deletion: {mode: none, target_hours: 24}
+isolation: {mode: process, kill_switch: true}
+limits: {timeout_seconds: 45, max_attempts: 1, requests_per_minute: 12, max_concurrency: 1, max_records_per_run: 200}

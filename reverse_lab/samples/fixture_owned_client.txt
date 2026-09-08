@@ -1,0 +1,5 @@
+OmniSignal authorized reverse-lab fixture
+format_version=1
+endpoint=https://fixture-rest.local/v1/items
+fields=source_record_id,title,text
+authentication=none

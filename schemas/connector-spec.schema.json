@@ -1,0 +1,421 @@
+{
+  "$defs": {
+    "AuthKind": {
+      "enum": [
+        "none",
+        "api_key",
+        "bearer",
+        "oauth2",
+        "cookie_session"
+      ],
+      "title": "AuthKind",
+      "type": "string"
+    },
+    "AuthSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/AuthKind",
+          "default": "none"
+        },
+        "secret_ref": {
+          "anyOf": [
+            {
+              "pattern": "^[a-zA-Z0-9_.:/-]+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Secret Ref"
+        }
+      },
+      "title": "AuthSpec",
+      "type": "object"
+    },
+    "Capability": {
+      "enum": [
+        "incremental",
+        "replay",
+        "deletion_sync",
+        "browser_render",
+        "realtime",
+        "authorized_hook"
+      ],
+      "title": "Capability",
+      "type": "string"
+    },
+    "CheckpointSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "strategy": {
+          "$ref": "#/$defs/CheckpointStrategy",
+          "default": "none"
+        },
+        "commit_every": {
+          "default": 100,
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Commit Every",
+          "type": "integer"
+        }
+      },
+      "title": "CheckpointSpec",
+      "type": "object"
+    },
+    "CheckpointStrategy": {
+      "enum": [
+        "none",
+        "cursor",
+        "timestamp",
+        "opaque"
+      ],
+      "title": "CheckpointStrategy",
+      "type": "string"
+    },
+    "ConnectorKind": {
+      "enum": [
+        "api",
+        "rss",
+        "html",
+        "browser",
+        "websocket",
+        "file",
+        "experimental_authorized"
+      ],
+      "title": "ConnectorKind",
+      "type": "string"
+    },
+    "DeleteMode": {
+      "enum": [
+        "none",
+        "tombstone",
+        "poll",
+        "webhook",
+        "full_resync"
+      ],
+      "title": "DeleteMode",
+      "type": "string"
+    },
+    "DeletionSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/DeleteMode",
+          "default": "none"
+        },
+        "target_hours": {
+          "default": 24,
+          "maximum": 720,
+          "minimum": 1,
+          "title": "Target Hours",
+          "type": "integer"
+        }
+      },
+      "title": "DeletionSpec",
+      "type": "object"
+    },
+    "ExtractorKind": {
+      "enum": [
+        "jsonpath",
+        "jmespath",
+        "css",
+        "xpath",
+        "trafilatura",
+        "plugin"
+      ],
+      "title": "ExtractorKind",
+      "type": "string"
+    },
+    "ExtractorSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ExtractorKind"
+        },
+        "selector": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selector"
+        },
+        "entrypoint": {
+          "anyOf": [
+            {
+              "pattern": "^[a-zA-Z_][a-zA-Z0-9_.:]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entrypoint"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "ExtractorSpec",
+      "type": "object"
+    },
+    "IsolationMode": {
+      "enum": [
+        "in_process",
+        "process",
+        "container"
+      ],
+      "title": "IsolationMode",
+      "type": "string"
+    },
+    "IsolationSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/IsolationMode",
+          "default": "in_process"
+        },
+        "kill_switch": {
+          "default": true,
+          "title": "Kill Switch",
+          "type": "boolean"
+        }
+      },
+      "title": "IsolationSpec",
+      "type": "object"
+    },
+    "PaginationKind": {
+      "enum": [
+        "none",
+        "page",
+        "offset",
+        "cursor",
+        "link_header",
+        "time_window",
+        "infinite_scroll"
+      ],
+      "title": "PaginationKind",
+      "type": "string"
+    },
+    "PaginationSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/PaginationKind",
+          "default": "none"
+        },
+        "page_size": {
+          "default": 100,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Page Size",
+          "type": "integer"
+        },
+        "cursor_field": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cursor Field"
+        },
+        "max_pages": {
+          "default": 100,
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Max Pages",
+          "type": "integer"
+        }
+      },
+      "title": "PaginationSpec",
+      "type": "object"
+    },
+    "RiskLevel": {
+      "enum": [
+        "standard",
+        "elevated",
+        "high"
+      ],
+      "title": "RiskLevel",
+      "type": "string"
+    },
+    "RuntimeLimits": {
+      "additionalProperties": false,
+      "properties": {
+        "timeout_seconds": {
+          "default": 30,
+          "maximum": 600,
+          "minimum": 1,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        },
+        "max_attempts": {
+          "default": 3,
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Max Attempts",
+          "type": "integer"
+        },
+        "requests_per_minute": {
+          "default": 30,
+          "maximum": 60000,
+          "minimum": 1,
+          "title": "Requests Per Minute",
+          "type": "integer"
+        },
+        "max_concurrency": {
+          "default": 1,
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Max Concurrency",
+          "type": "integer"
+        },
+        "max_records_per_run": {
+          "default": 10000,
+          "maximum": 10000000,
+          "minimum": 1,
+          "title": "Max Records Per Run",
+          "type": "integer"
+        }
+      },
+      "title": "RuntimeLimits",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "spec_version": {
+      "pattern": "^1\\.\\d+$",
+      "title": "Spec Version",
+      "type": "string"
+    },
+    "id": {
+      "pattern": "^[a-z][a-z0-9_]{2,63}$",
+      "title": "Id",
+      "type": "string"
+    },
+    "display_name": {
+      "maxLength": 120,
+      "minLength": 1,
+      "title": "Display Name",
+      "type": "string"
+    },
+    "connector_version": {
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "title": "Connector Version",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/ConnectorKind"
+    },
+    "risk_level": {
+      "$ref": "#/$defs/RiskLevel",
+      "default": "standard"
+    },
+    "capabilities": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Capability"
+      },
+      "title": "Capabilities",
+      "type": "array",
+      "uniqueItems": true
+    },
+    "allowed_targets": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Allowed Targets",
+      "type": "array"
+    },
+    "field_allowlist": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Field Allowlist",
+      "type": "array"
+    },
+    "output_schema_version": {
+      "default": "1.0",
+      "pattern": "^1\\.\\d+$",
+      "title": "Output Schema Version",
+      "type": "string"
+    },
+    "auth": {
+      "$ref": "#/$defs/AuthSpec",
+      "default": {
+        "kind": "none",
+        "secret_ref": null
+      }
+    },
+    "pagination": {
+      "$ref": "#/$defs/PaginationSpec",
+      "default": {
+        "kind": "none",
+        "page_size": 100,
+        "cursor_field": null,
+        "max_pages": 100
+      }
+    },
+    "extractor": {
+      "$ref": "#/$defs/ExtractorSpec"
+    },
+    "checkpoint": {
+      "$ref": "#/$defs/CheckpointSpec",
+      "default": {
+        "strategy": "none",
+        "commit_every": 100
+      }
+    },
+    "deletion": {
+      "$ref": "#/$defs/DeletionSpec",
+      "default": {
+        "mode": "none",
+        "target_hours": 24
+      }
+    },
+    "isolation": {
+      "$ref": "#/$defs/IsolationSpec",
+      "default": {
+        "mode": "in_process",
+        "kill_switch": true
+      }
+    },
+    "limits": {
+      "$ref": "#/$defs/RuntimeLimits",
+      "default": {
+        "timeout_seconds": 30,
+        "max_attempts": 3,
+        "requests_per_minute": 30,
+        "max_concurrency": 1,
+        "max_records_per_run": 10000
+      }
+    }
+  },
+  "required": [
+    "spec_version",
+    "id",
+    "display_name",
+    "connector_version",
+    "kind",
+    "allowed_targets",
+    "field_allowlist",
+    "extractor"
+  ],
+  "title": "ConnectorSpec",
+  "type": "object"
+}

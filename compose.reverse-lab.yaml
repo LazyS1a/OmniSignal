@@ -1,0 +1,36 @@
+name: omnisignal-reverse-lab
+
+services:
+  lab-gate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command:
+      - python
+      - -m
+      - omnisignal.reverse_lab.cli
+      - --workspace
+      - /lab
+      - verify-sample
+      - --manifest
+      - /lab/manifests/fixture_owned_client.yaml
+      - --actor
+      - isolated_lab_gate
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1.0
+    volumes:
+      - type: bind
+        source: ./reverse_lab
+        target: /lab
+        read_only: true
+      - type: bind
+        source: ./reverse_lab/audit
+        target: /lab/audit
