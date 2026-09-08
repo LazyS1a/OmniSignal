@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/LazyS1a/OmniSignal/security/advisories/new
+    about: 私密报告安全漏洞；不要在公开 Issue 中粘贴利用细节或敏感数据

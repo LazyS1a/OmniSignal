@@ -1,7 +1,7 @@
 [project]
 name = "omnisignal"
 version = "0.1.0"
-description = "Generic multi-source ingestion and normalization platform"
+description = "Observable multi-source ingestion and normalization platform for public signals"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "alembic==1.19.1",

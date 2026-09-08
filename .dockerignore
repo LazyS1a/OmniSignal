@@ -11,7 +11,6 @@ tmp
 artifacts/private
 sbom
 tests
-examples
 reverse_lab
 *.sqlite3
 .env

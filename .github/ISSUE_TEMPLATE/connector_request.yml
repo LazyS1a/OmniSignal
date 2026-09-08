@@ -1,0 +1,35 @@
+name: Connector proposal
+description: 建议一个边界清楚、可持续维护的新数据来源
+title: "[Connector] "
+labels: [enhancement, connector]
+body:
+  - type: input
+    id: source
+    attributes:
+      label: Public source
+      description: 数据来源及其公开文档地址
+    validations:
+      required: true
+  - type: textarea
+    id: value
+    attributes:
+      label: Signal and use case
+      description: 想采集什么信号，为什么现有连接器不能覆盖
+    validations:
+      required: true
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Access boundaries
+      description: 登录、限流、robots、字段最小化、保留期限与失败语义
+    validations:
+      required: true
+  - type: checkboxes
+    id: authorization
+    attributes:
+      label: Authorization
+      options:
+        - label: 目标为公开、自有、开源练习样本或已取得明确授权的系统
+          required: true
+        - label: 方案不依赖绕过登录、验证码、付费墙或访问控制
+          required: true

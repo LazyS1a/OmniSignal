@@ -1,0 +1,49 @@
+name: Bug report
+description: 报告可复现的运行、数据或界面问题
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先删除 Token、Cookie、账号、个人数据、私有响应和本机绝对路径。安全漏洞请使用 Security 私密入口，不要公开提交利用细节。
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: 版本标签或 commit SHA
+      placeholder: v0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Connector / Worker
+        - API / Storage
+        - Operations UI
+        - Docker / Deployment
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: 最小复现步骤、预期行为和实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: 可选。仅提供脱敏日志、错误分类或截图
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: 我已确认内容不含凭据、Cookie、私有响应或个人数据
+          required: true

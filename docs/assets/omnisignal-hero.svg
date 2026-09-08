@@ -1,0 +1,53 @@
+<svg width="1440" height="620" viewBox="0 0 1440 620" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="88" y1="20" x2="1360" y2="620" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#05070D"/>
+      <stop offset="0.55" stop-color="#080D1C"/>
+      <stop offset="1" stop-color="#071329"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="446" y1="174" x2="1050" y2="431" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7DD3FC"/>
+      <stop offset="0.42" stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1058 178) rotate(139) scale(632 476)">
+      <stop stop-color="#2563EB" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#2563EB" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M 48 0 L 0 0 0 48" stroke="#60A5FA" stroke-opacity="0.055" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1440" height="620" rx="28" fill="url(#bg)"/>
+  <rect width="1440" height="620" rx="28" fill="url(#grid)"/>
+  <rect width="1440" height="620" rx="28" fill="url(#glow)"/>
+  <rect x="1" y="1" width="1438" height="618" rx="27" stroke="#2563EB" stroke-opacity="0.32" stroke-width="2"/>
+  <circle cx="208" cy="188" r="92" fill="#2563EB" fill-opacity="0.09" filter="url(#soft)"/>
+  <circle cx="208" cy="188" r="58" stroke="#60A5FA" stroke-opacity="0.22" stroke-width="1.5"/>
+  <circle cx="208" cy="188" r="36" stroke="#3B82F6" stroke-opacity="0.5" stroke-width="2"/>
+  <circle cx="208" cy="188" r="10" fill="#60A5FA"/>
+  <circle cx="208" cy="130" r="5" fill="#2563EB"/>
+  <circle cx="262" cy="208" r="5" fill="#38BDF8"/>
+  <circle cx="161" cy="222" r="5" fill="#1D4ED8"/>
+  <path d="M208 130L208 178M262 208L218 192M161 222L199 196" stroke="#60A5FA" stroke-opacity="0.72" stroke-width="2"/>
+  <text x="318" y="170" fill="#94A3B8" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="20" font-weight="600" letter-spacing="4">MULTI-SOURCE INTELLIGENCE</text>
+  <text x="318" y="246" fill="#F8FAFC" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="72" font-weight="750" letter-spacing="-2">Omni<tspan fill="url(#blue)">Signal</tspan></text>
+  <text x="322" y="292" fill="#CBD5E1" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="23">Collect. Normalize. Trace. Observe.</text>
+  <text x="322" y="330" fill="#64748B" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="17">A local-first control plane for observable public-signal pipelines.</text>
+  <g transform="translate(104,402)">
+    <path d="M145 35H265M425 35H545M705 35H825M985 35H1105" stroke="#2563EB" stroke-opacity="0.36" stroke-width="2" stroke-dasharray="7 8"/>
+    <g><rect width="145" height="70" rx="15" fill="#0B1220" stroke="#1E3A5F"/><circle cx="27" cy="35" r="7" fill="#60A5FA"/><text x="47" y="41" fill="#E2E8F0" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="16" font-weight="650">INGEST</text></g>
+    <g transform="translate(265,0)"><rect width="160" height="70" rx="15" fill="#0B1220" stroke="#1E3A5F"/><circle cx="27" cy="35" r="7" fill="#3B82F6"/><text x="47" y="41" fill="#E2E8F0" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="16" font-weight="650">EVIDENCE</text></g>
+    <g transform="translate(545,0)"><rect width="160" height="70" rx="15" fill="#0B1220" stroke="#1E3A5F"/><circle cx="27" cy="35" r="7" fill="#2563EB"/><text x="47" y="41" fill="#E2E8F0" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="16" font-weight="650">NORMALIZE</text></g>
+    <g transform="translate(825,0)"><rect width="160" height="70" rx="15" fill="#0B1220" stroke="#1E3A5F"/><circle cx="27" cy="35" r="7" fill="#38BDF8"/><text x="47" y="41" fill="#E2E8F0" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="16" font-weight="650">OBSERVE</text></g>
+    <g transform="translate(1105,0)"><rect width="125" height="70" rx="15" fill="#0B1220" stroke="#2563EB" stroke-opacity="0.72"/><circle cx="25" cy="35" r="7" fill="#22C55E"/><text x="44" y="41" fill="#E2E8F0" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="16" font-weight="650">READY</text></g>
+  </g>
+  <g transform="translate(104,526)">
+    <rect width="154" height="38" rx="19" fill="#0B1220" stroke="#1E3A5F"/><text x="77" y="25" text-anchor="middle" fill="#93C5FD" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="650">312 TESTS</text>
+    <rect x="168" width="168" height="38" rx="19" fill="#0B1220" stroke="#1E3A5F"/><text x="252" y="25" text-anchor="middle" fill="#93C5FD" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="650">FAIL-CLOSED</text>
+    <rect x="350" width="170" height="38" rx="19" fill="#0B1220" stroke="#1E3A5F"/><text x="435" y="25" text-anchor="middle" fill="#93C5FD" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="13" font-weight="650">LOCAL-FIRST</text>
+  </g>
+</svg>
