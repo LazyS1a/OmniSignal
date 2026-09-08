@@ -9,6 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/LazyS1a/OmniSignal/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/LazyS1a/OmniSignal/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="https://lazys1a.github.io/OmniSignal/"><img alt="Live Demo" src="https://img.shields.io/badge/Live_Demo-GitHub_Pages-2563eb?logo=github" /></a>
   <a href="https://github.com/LazyS1a/OmniSignal/releases"><img alt="Release" src="https://img.shields.io/github/v/release/LazyS1a/OmniSignal?display_name=tag&amp;sort=semver&amp;color=2563eb" /></a>
   <a href="https://www.python.org/"><img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&amp;logoColor=white" /></a>
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/License-MIT-0f172a.svg" /></a>
@@ -16,6 +17,7 @@
 
 <p align="center">
   <a href="#为什么做-omnisignal">项目定位</a> ·
+  <a href="#在线只读-demo">在线 Demo</a> ·
   <a href="#系统架构">系统架构</a> ·
   <a href="#五分钟开始">快速开始</a> ·
   <a href="#可验证状态">验证状态</a> ·
@@ -23,6 +25,12 @@
 </p>
 
 > 当前版本：`v0.1.0`。已完成本地部署与真实公开数据链路验证；不宣称生产环境 SLA、全网绝对搜索量或无可信分母的跨平台市场份额。
+
+## 在线只读 Demo
+
+访问 **[OmniSignal Public Demo](https://lazys1a.github.io/OmniSignal/)**，无需安装即可查看运行总览、来源登记、采集任务、多日趋势、检索采样和证据质量页面。
+
+公网版本是独立的静态演示层：只使用内嵌合成快照，不连接真实 API、不发起外部采集，也不保存任何操作。完整 FastAPI、数据库、Worker、凭据和控制能力仅在本地部署中提供。
 
 ## 为什么做 OmniSignal
 
@@ -93,7 +101,7 @@ uv run pytest -q
 
 > 一键脚本默认把缓存放在 `D:\CodexCache\OmniSignal`。其他磁盘布局可先调整 `scripts/use-d-drive.ps1`，或直接使用 uv / Docker 命令启动。
 
-默认入口：
+以下均为本机回环地址，不是公网服务：
 
 - 总控台：`http://127.0.0.1:8501`
 - API readiness：`http://127.0.0.1:8010/health/ready`

@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="OmniSignal 只读公网演示：多源公开检索信号的采集、标准化、证据链与运维可观测工作台。" />
+  <meta name="theme-color" content="#06080c" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'" />
+  <title>OmniSignal · Public Demo</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="demo-strip" role="status">
+    <span class="demo-strip__tag">PUBLIC DEMO</span>
+    <span>只读合成快照</span>
+    <span class="demo-strip__detail">不连接真实 API · 不发起外部采集 · 不保存操作</span>
+  </div>
+
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand__mark" aria-hidden="true">OS</div>
+        <div>
+          <strong>OmniSignal</strong>
+          <span>Operations Console</span>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="演示页面">
+        <span class="nav__label">工作台</span>
+        <button class="nav__item is-active" type="button" data-view="overview"><span aria-hidden="true">◫</span>运行总览</button>
+        <button class="nav__item" type="button" data-view="sources"><span aria-hidden="true">◇</span>数据来源</button>
+        <button class="nav__item" type="button" data-view="tasks"><span aria-hidden="true">▷</span>采集任务</button>
+        <span class="nav__label">数据与证据</span>
+        <button class="nav__item" type="button" data-view="trends"><span aria-hidden="true">⌁</span>多日趋势</button>
+        <button class="nav__item" type="button" data-view="visibility"><span aria-hidden="true">⌕</span>检索采样</button>
+        <button class="nav__item" type="button" data-view="quality"><span aria-hidden="true">⬡</span>证据与质量</button>
+      </nav>
+
+      <div class="sidebar__footer">
+        <div class="status-line"><span class="status-dot status-dot--green"></span>演示数据已加载</div>
+        <div class="status-line"><span class="status-dot"></span>控制面已锁定</div>
+        <a href="https://github.com/LazyS1a/OmniSignal" target="_blank" rel="noreferrer">查看 GitHub 仓库 ↗</a>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="icon-button menu-button" id="menuButton" type="button" aria-label="打开导航" aria-controls="sidebar" aria-expanded="false">☰</button>
+        <div>
+          <span class="eyebrow">OmniSignal Operations</span>
+          <h1 id="pageTitle">运行总览</h1>
+        </div>
+        <div class="topbar__actions">
+          <span class="snapshot">Snapshot · 2026-09-08 16:00 UTC</span>
+          <button class="button button--ghost" id="resetDemo" type="button">重置演示</button>
+        </div>
+      </header>
+
+      <div class="read-only-note">
+        <strong>安全演示模式</strong>
+        页面使用内嵌合成数据还原真实信息结构；完整服务、数据库、令牌与采集 Worker 未部署到公网。
+      </div>
+
+      <section class="view is-visible" data-view-panel="overview">
+        <div class="section-heading">
+          <div><span class="eyebrow">System pulse</span><h2>链路状态一眼看清</h2></div>
+          <span class="health-badge"><span class="status-dot status-dot--green"></span>演示环境正常</span>
+        </div>
+
+        <div class="metric-grid">
+          <article class="metric"><span>登记来源</span><strong>5</strong><small>5 个处于可观测状态</small></article>
+          <article class="metric"><span>近 24h 运行</span><strong>14</strong><small class="positive">13 成功 · 1 部分覆盖</small></article>
+          <article class="metric"><span>证据记录</span><strong>1,240</strong><small>100% 关联归档哈希</small></article>
+          <article class="metric"><span>标准化质量</span><strong>96.8%</strong><small class="positive">+1.4% vs 前一窗口</small></article>
+        </div>
+
+        <div class="dashboard-grid">
+          <article class="panel panel--wide">
+            <div class="panel__header"><div><span class="eyebrow">Pipeline</span><h3>可追踪处理链路</h3></div><span class="panel__meta">最后运行 4 分钟前</span></div>
+            <div class="pipeline" aria-label="采集处理链路">
+              <div class="pipeline__node is-done"><span>01</span><strong>采集</strong><small>40 seen</small></div>
+              <div class="pipeline__line"></div>
+              <div class="pipeline__node is-done"><span>02</span><strong>证据归档</strong><small>SHA verified</small></div>
+              <div class="pipeline__line"></div>
+              <div class="pipeline__node is-done"><span>03</span><strong>标准化</strong><small>40 accepted</small></div>
+              <div class="pipeline__line"></div>
+              <div class="pipeline__node is-done"><span>04</span><strong>投影</strong><small>4 slices</small></div>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel__header"><div><span class="eyebrow">Quality</span><h3>记录质量</h3></div><span class="panel__meta">1,240 total</span></div>
+            <div class="quality-summary">
+              <div class="quality-ring"><strong>96.8%</strong><span>accepted</span></div>
+              <ul class="legend">
+                <li><span class="legend__swatch legend__swatch--blue"></span><span>Accepted</span><strong>1,200</strong></li>
+                <li><span class="legend__swatch legend__swatch--cyan"></span><span>Review</span><strong>28</strong></li>
+                <li><span class="legend__swatch legend__swatch--slate"></span><span>Rejected</span><strong>12</strong></li>
+              </ul>
+            </div>
+          </article>
+        </div>
+
+        <article class="panel">
+          <div class="panel__header"><div><span class="eyebrow">Recent activity</span><h3>最近运行</h3></div><button class="text-button" type="button" data-jump="tasks">查看任务 →</button></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>任务</th><th>来源</th><th>覆盖</th><th>写入</th><th>耗时</th><th>状态</th></tr></thead>
+              <tbody>
+                <tr><td>web_visibility_demo</td><td>SearXNG</td><td>4 / 4 slices</td><td>40</td><td>4.2s</td><td><span class="chip chip--success">成功</span></td></tr>
+                <tr><td>youtube_sample_demo</td><td>YouTube</td><td>1 / 1 query</td><td>10</td><td>6.8s</td><td><span class="chip chip--success">成功</span></td></tr>
+                <tr><td>relative_interest_demo</td><td>Trends</td><td>2 / 3 signals</td><td>62</td><td>8.1s</td><td><span class="chip chip--warning">部分覆盖</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="view" data-view-panel="sources" hidden>
+        <div class="section-heading"><div><span class="eyebrow">Source registry</span><h2>来源状态与边界</h2></div><span class="panel__meta">合成登记快照</span></div>
+        <div class="source-grid">
+          <article class="source-card"><div><span class="source-icon">SX</span><span class="chip chip--success">Ready</span></div><h3>SearXNG</h3><p>按关键词 × 引擎独立采样，保存位置与逐条证据。</p><footer><span>4 slices</span><span>2 engines</span></footer></article>
+          <article class="source-card"><div><span class="source-icon">YT</span><span class="chip chip--success">Ready</span></div><h3>YouTube</h3><p>Top-K 公开视频结果采样，不推导平台绝对搜索量。</p><footer><span>1 query</span><span>10 results</span></footer></article>
+          <article class="source-card"><div><span class="source-icon">GH</span><span class="chip chip--success">Ready</span></div><h3>GitHub</h3><p>公开 Issue / PR 搜索，仅保留登记字段与来源链接。</p><footer><span>API</span><span>allowlisted</span></footer></article>
+          <article class="source-card"><div><span class="source-icon">WT</span><span class="chip chip--warning">Limited</span></div><h3>Relative Trends</h3><p>保存相对指数及口径，不与绝对次数混用。</p><footer><span>2 / 3 signals</span><span>partial</span></footer></article>
+          <article class="source-card"><div><span class="source-icon">WB</span><span class="chip chip--success">Ready</span></div><h3>Static Web</h3><p>白名单目标、robots 检查、正文提取与条件缓存。</p><footer><span>3 targets</span><span>bounded</span></footer></article>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="tasks" hidden>
+        <div class="section-heading"><div><span class="eyebrow">Collection</span><h2>固定白名单任务</h2></div><span class="health-badge health-badge--locked">只读演示</span></div>
+        <p class="section-copy">真实总控台只允许服务端登记任务；公网 Demo 进一步关闭所有提交、启停和导出能力。</p>
+        <div class="task-list">
+          <article class="task-card"><div><span class="chip chip--success">来源可用</span><small>searxng_results</small></div><h3>Web 检索采样</h3><p>2 个合成关键词 × 2 个演示引擎，每个切片最多 10 条。</p><div class="task-card__footer"><span>预计上限 40 records</span><button class="button" type="button" disabled>运行一次 · 已锁定</button></div></article>
+          <article class="task-card"><div><span class="chip chip--success">来源可用</span><small>youtube_visibility</small></div><h3>视频结果采样</h3><p>保存 Top-K 标题、位置、命中分类与来源证据。</p><div class="task-card__footer"><span>预计上限 10 records</span><button class="button" type="button" disabled>运行一次 · 已锁定</button></div></article>
+          <article class="task-card"><div><span class="chip chip--warning">部分可用</span><small>public_search_signals</small></div><h3>相对兴趣快照</h3><p>只表达来源自身的相对指数，不换算绝对搜索次数。</p><div class="task-card__footer"><span>2 / 3 signals ready</span><button class="button" type="button" disabled>运行一次 · 已锁定</button></div></article>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="trends" hidden>
+        <div class="section-heading"><div><span class="eyebrow">Relative signals</span><h2>多日趋势</h2></div><div class="segmented" aria-label="时间窗口"><button type="button" data-range="7" class="is-active">7 天</button><button type="button" data-range="30">30 天</button><button type="button" data-range="90">90 天</button></div></div>
+        <p class="section-copy">指数仅在相同来源、相同口径和相同时间窗口内比较；这里没有全网真实搜索次数。</p>
+        <article class="panel chart-panel">
+          <div class="panel__header"><div><h3>合成产品检索兴趣</h3><span class="panel__meta">unit: relative_index · 0–100</span></div><div class="chart-legend"><span><i class="line-key line-key--blue"></i>OmniNote</span><span><i class="line-key line-key--cyan"></i>AtlasNote</span></div></div>
+          <svg class="trend-chart" viewBox="0 0 900 320" role="img" aria-label="两条合成相对兴趣趋势折线">
+            <g class="chart-grid"><line x1="60" y1="50" x2="860" y2="50"/><line x1="60" y1="115" x2="860" y2="115"/><line x1="60" y1="180" x2="860" y2="180"/><line x1="60" y1="245" x2="860" y2="245"/></g>
+            <g class="chart-axis"><text x="20" y="55">100</text><text x="30" y="120">75</text><text x="30" y="185">50</text><text x="30" y="250">25</text></g>
+            <path id="ownedTrend" class="trend-line trend-line--blue" d="M60 220 L193 205 L326 185 L460 172 L593 140 L726 118 L860 88"/>
+            <path id="competitorTrend" class="trend-line trend-line--cyan" d="M60 160 L193 153 L326 166 L460 141 L593 148 L726 130 L860 138"/>
+            <g class="chart-labels"><text x="60" y="286">09/02</text><text x="315" y="286">09/04</text><text x="580" y="286">09/06</text><text x="820" y="286">09/08</text></g>
+          </svg>
+        </article>
+      </section>
+
+      <section class="view" data-view-panel="visibility" hidden>
+        <div class="section-heading"><div><span class="eyebrow">Search sample</span><h2>关键词检索采样</h2></div><span class="panel__meta">每个关键词 × 引擎独立分母</span></div>
+        <div class="toolbar"><label>合成关键词<select id="keywordSelect"><option>AI 笔记工具</option><option>团队知识库</option><option>Markdown 知识库</option></select></label><label>演示引擎<select id="engineSelect"><option>Brave sample</option><option>DuckDuckGo sample</option></select></label></div>
+        <div class="metric-grid metric-grid--three">
+          <article class="metric"><span>有效结果数</span><strong id="sampleDenominator">10</strong><small>Top-K 样本分母</small></article>
+          <article class="metric"><span>OmniNote 命中</span><strong id="ownedHits">3 / 10</strong><small id="ownedPosition">首次位置 #1</small></article>
+          <article class="metric"><span>样本可见比例</span><strong id="ownedShare">30%</strong><small>不是搜索次数或市场份额</small></article>
+        </div>
+        <div class="dashboard-grid">
+          <article class="panel"><div class="panel__header"><h3>实体命中分布</h3><span class="panel__meta">同条结果可命中多个实体</span></div><div id="entityBars" class="bar-list"></div></article>
+          <article class="panel panel--wide"><div class="panel__header"><h3>逐条证据</h3><span class="chip chip--success">coverage complete</span></div><div class="table-wrap"><table><thead><tr><th>位置</th><th>标题</th><th>实体分类</th><th>质量</th></tr></thead><tbody id="evidenceRows"></tbody></table></div></article>
+        </div>
+      </section>
+
+      <section class="view" data-view-panel="quality" hidden>
+        <div class="section-heading"><div><span class="eyebrow">Evidence & audit</span><h2>证据链与质量事件</h2></div><span class="health-badge"><span class="status-dot status-dot--green"></span>Archive verified</span></div>
+        <div class="metric-grid metric-grid--three">
+          <article class="metric"><span>归档覆盖</span><strong>100%</strong><small>1,240 / 1,240 linked</small></article>
+          <article class="metric"><span>完整性检查</span><strong>OK</strong><small>SHA-256 verified</small></article>
+          <article class="metric"><span>待复核事件</span><strong>3</strong><small>不自动吞并或改写</small></article>
+        </div>
+        <article class="panel"><div class="panel__header"><div><span class="eyebrow">Audit trail</span><h3>最近审计事件</h3></div><span class="panel__meta">只显示脱敏摘要</span></div><div class="timeline"><div><span></span><article><time>16:00:14 UTC</time><strong>archive_integrity_verified</strong><p>40 条标准记录关联到同一批次归档，内容哈希一致。</p></article></div><div><span></span><article><time>16:00:12 UTC</time><strong>normalization_completed</strong><p>40 accepted · 0 rejected · processor v1.0。</p></article></div><div><span></span><article><time>16:00:08 UTC</time><strong>slice_coverage_recorded</strong><p>4 / 4 合成切片完成；无警告。</p></article></div><div><span></span><article><time>16:00:04 UTC</time><strong>collection_started</strong><p>任务来自固定白名单，调度器未开启。</p></article></div></div></article>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">演示状态已重置</div>
+  <script src="app.js" defer></script>
+</body>
+</html>
