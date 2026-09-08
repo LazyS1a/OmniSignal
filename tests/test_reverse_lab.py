@@ -81,7 +81,7 @@ def test_repository_fixture_is_registered_and_hash_matches() -> None:
         yaml.safe_load((lab_root / "manifests" / "fixture_owned_client.yaml").read_text(encoding="utf-8"))
     )
     registry = TargetRegistry.model_validate(
-        yaml.safe_load((lab_root / "allowlist.yaml").read_text(encoding="utf-8"))
+        yaml.safe_load((lab_root / "allowlist.example.yaml").read_text(encoding="utf-8"))
     )
     actual_hash = hashlib.sha256((lab_root / manifest.relative_path).read_bytes()).hexdigest()
     assert any(target.target_id == manifest.target_id for target in registry.targets)

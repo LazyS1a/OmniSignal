@@ -5,7 +5,7 @@ targets:
     display_name: OmniSignal 自有离线练习样本
     status: allowed
     authorization_basis: self_owned
-    authorization_reference: project_charter.md#参考覆盖矩阵
+    authorization_reference: reverse_lab/manifests/fixture_owned_client.yaml
     authorized_scope:
       - fixture-protocol-mapping
     allowed_tools: [ghidra]
