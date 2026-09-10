@@ -23,7 +23,7 @@ class Settings(BaseModel):
     database_url: str = Field(min_length=1)
     log_level: str = "INFO"
     service_name: str = "omnisignal-api"
-    service_version: str = "0.0.0"
+    service_version: str = "0.2.0"
 
     @field_validator("database_url")
     @classmethod
@@ -69,7 +69,7 @@ class Settings(BaseModel):
             environment=os.getenv("OMNISIGNAL_ENV", Environment.DEVELOPMENT.value),
             database_url=database_url,
             log_level=os.getenv("OMNISIGNAL_LOG_LEVEL", "INFO"),
-            service_version=os.getenv("OMNISIGNAL_VERSION", "0.0.0"),
+            service_version=os.getenv("OMNISIGNAL_VERSION", "0.2.0"),
         )
 
     def safe_database_target(self) -> str:

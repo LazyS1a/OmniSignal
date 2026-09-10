@@ -18,9 +18,9 @@ COPY alembic.ini ./
 COPY migrations ./migrations
 COPY src ./src
 COPY governance/source_registry.yaml ./governance/source_registry.yaml
-COPY config/collection_tasks.yaml ./config/collection_tasks.yaml
-COPY examples/connectors/public_search_signals.yaml examples/connectors/youtube_visibility.yaml ./examples/connectors/
-COPY examples/policies/public_search_signals.yaml examples/policies/youtube_visibility.yaml ./examples/policies/
+COPY config/collection_tasks.yaml config/keyword_sets.yaml config/entity_sets.yaml config/snapshot_schedules.yaml ./config/
+COPY examples/connectors/public_search_signals.yaml examples/connectors/youtube_visibility.yaml examples/connectors/searxng_results.yaml ./examples/connectors/
+COPY examples/policies/public_search_signals.yaml examples/policies/youtube_visibility.yaml examples/policies/searxng_results.yaml examples/policies/searxng_dual_engine.yaml ./examples/policies/
 
 RUN chown -R omnisignal:omnisignal /app
 USER omnisignal

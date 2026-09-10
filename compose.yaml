@@ -47,6 +47,7 @@ services:
       OMNISIGNAL_DB_USER: omnisignal
       OMNISIGNAL_DB_PASSWORD: ${OMNISIGNAL_DB_PASSWORD:?set OMNISIGNAL_DB_PASSWORD before starting}
       OMNISIGNAL_LOG_LEVEL: INFO
+      OMNISIGNAL_VERSION: ${OMNISIGNAL_VERSION:-0.2.0}
       OMNISIGNAL_CONTROL_PRINCIPALS_JSON: ${OMNISIGNAL_CONTROL_PRINCIPALS_JSON:-}
     depends_on:
       db:
@@ -60,6 +61,10 @@ services:
       retries: 3
       start_period: 30s
     read_only: true
+    volumes:
+      - type: bind
+        source: ${OMNISIGNAL_APP_DATA_DIR:-./data/app}
+        target: /app/data
     tmpfs:
       - /tmp:size=64m,mode=1777
     cap_drop: [ALL]

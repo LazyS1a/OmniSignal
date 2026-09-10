@@ -1,19 +1,21 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$BackupPath
+    [string]$BackupPath,
+    [ValidatePattern('^[a-z0-9][a-z0-9_.-]{0,62}$')]
+    [string]$ComposeProject = 'omnisignal'
 )
 
 $ErrorActionPreference = "Stop"
 . "$PSScriptRoot\use-d-drive.ps1"
-$projectRoot = Split-Path -Parent $PSScriptRoot
+. "$PSScriptRoot\lib\compose-container.ps1"
 $resolvedBackup = Resolve-Path -LiteralPath $BackupPath
-$verificationDatabase = "omnisignal_restore_verify"
-$temporaryPath = "/tmp/omnisignal-restore-verify.dump"
+$runId = [Guid]::NewGuid().ToString('N')
+$verificationDatabase = "omnisignal_restore_$($runId.Substring(0, 12))"
+$temporaryPath = "/tmp/omnisignal-restore-$runId.dump"
 
-Push-Location $projectRoot
+$container = $null
 try {
-    $container = docker compose ps --quiet db
-    if ([string]::IsNullOrWhiteSpace($container)) { throw "Database container is not running." }
+    $container = Resolve-ComposeContainer -Project $ComposeProject -Service 'db'
 
     docker exec $container dropdb --if-exists -U omnisignal $verificationDatabase
     docker exec $container createdb -U omnisignal $verificationDatabase
@@ -29,5 +31,4 @@ try {
         docker exec $container dropdb --if-exists -U omnisignal $verificationDatabase | Out-Null
         docker exec $container rm -f $temporaryPath | Out-Null
     }
-    Pop-Location
 }

@@ -12,8 +12,9 @@ if ([string]::IsNullOrWhiteSpace($env:OMNISIGNAL_DB_PASSWORD)) {
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $dataDirectory = Join-Path $projectRoot "data\postgres"
+$appDataDirectory = Join-Path $projectRoot "data\app"
 $backupDirectory = Join-Path $projectRoot "backups"
-New-Item -ItemType Directory -Force -Path $dataDirectory, $backupDirectory | Out-Null
+New-Item -ItemType Directory -Force -Path $dataDirectory, $appDataDirectory, $backupDirectory | Out-Null
 
 Push-Location $projectRoot
 try {

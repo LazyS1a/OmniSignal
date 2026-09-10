@@ -1,6 +1,26 @@
-# 本地故障检查与 SQLite 恢复演练
+# 本地故障检查与数据库恢复演练
 
-适用范围：D 盘 OmniSignal 开发库与本机运维 API。不是 PostgreSQL 灾备手册，也不是长期运行验收报告。
+适用范围：D 盘 OmniSignal 开发库、本机 PostgreSQL 和运维 API。不是异地灾备方案，也不是长期运行 SLA 报告。
+
+## PostgreSQL 独立恢复与重启演练
+
+Docker 中的主数据库健康时，在项目根目录执行：
+
+```powershell
+.\scripts\test-postgres-recovery.ps1
+```
+
+脚本按 Compose 标签定位唯一的 `db` 容器，不要求当前终端重新提供数据库密码，也不会读取容器里的现有密码。它会：
+
+1. 用 `pg_dump` 生成 custom-format 逻辑备份并计算 SHA-256。
+2. 使用与源库相同的 PostgreSQL 镜像，创建随机命名的独立容器和独立卷。
+3. 把备份恢复到独立实例，核对 Alembic revision 和 public 表数量。
+4. 重启独立实例，再次核对 revision，随后只删除本轮随机命名的容器和卷。
+5. 在 `backups/postgres/drill-*/` 留下 `backup.dump` 与脱敏 `evidence.json`。
+
+源数据库不停止、不切换、不覆盖。报告中的 `measured_restore_seconds` 和 `measured_restart_seconds` 只适用于本机、本次数据规模；没有周期备份频率和真实故障时间线时，`production_rpo_established` 与 `production_rto_established` 固定为 `false`。
+
+旧的 `backup-database.ps1` 和 `verify-backup.ps1` 仍可分别生成备份、在源容器的临时数据库中做快速逻辑验证。恢复演练优先用独立脚本，因为它额外覆盖新实例启动、独立存储和重启后持久性。
 
 ## 一条命令验证数据库备份
 
@@ -102,4 +122,4 @@ ready 不会自行迁移或修复数据库，也不证明所有平台可访问�
 
 本测试证明的是自建进程被终止后的恢复，不证明机器断电、磁盘损坏、磁盘写满或 PostgreSQL 崩溃恢复。没有终止任何用户服务、没有变更主库。
 
-Gate 8 仍进行中：上游凭据轮换、孤立运行记录的授权结算、数据库写失败，PostgreSQL 独立恢复与重启、依赖升级回退、连续运行观测和正式告警通道仍需补验。本地单次健康巡检已完成，但不是无人值守监控。本轮没有新增计划任务、自动采集、外部通知或真实平台授权。
+当前已具备数据库不可达安全 503、恢复后 readiness、SQLite 恢复、PostgreSQL 独立恢复与重启证据。上游账号凭据轮换、跨机器异地恢复、连续运行观测和正式告警通道仍需真实环境补验。本地单次健康巡检不是无人值守监控。本轮没有新增计划任务、自动采集、外部通知或真实平台授权。
