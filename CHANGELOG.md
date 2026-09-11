@@ -4,6 +4,20 @@
 
 ## Unreleased
 
+### Added
+
+- 新增 Docker 版 Windows 双击启动/关闭入口，一键启动 PostgreSQL、FastAPI 与 Streamlit 总控台。
+- Docker 总控台首次启动生成本机私有 secrets 和独立数据目录，支持健康等待、幂等复用与端口冲突前置检查。
+
+### Changed
+
+- 应用镜像加入固定版本 Streamlit 运行依赖；Compose 新增只绑定本机回环地址的 UI 服务。
+
+### Boundaries
+
+- Docker 总控台不会自动启用调度或发起采集；SearXNG 仍为独立可选依赖。
+- 关闭入口保留 PostgreSQL 与应用数据，不删除卷或私有 secrets。
+
 ## 0.2.0 — 2026-09-09
 
 ### Added

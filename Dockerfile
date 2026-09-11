@@ -12,7 +12,7 @@ RUN apk upgrade --no-cache \
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project --extra signals
+RUN uv sync --frozen --no-dev --no-install-project --extra signals --extra ui
 
 COPY alembic.ini ./
 COPY migrations ./migrations
@@ -25,5 +25,5 @@ COPY examples/policies/public_search_signals.yaml examples/policies/youtube_visi
 RUN chown -R omnisignal:omnisignal /app
 USER omnisignal
 
-EXPOSE 8000
+EXPOSE 8000 8501
 CMD ["uvicorn", "omnisignal.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]

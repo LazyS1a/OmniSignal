@@ -109,6 +109,19 @@ uv run pytest -q
 
 ### Docker Compose
 
+Docker Desktop 显示 Engine running 后，可直接双击 `用Docker打开OmniSignal总控台.cmd`。入口会：
+
+1. 首次生成并复用本机私有数据库密码与采集执行 token；
+2. 构建并启动 PostgreSQL、FastAPI 和 Streamlit；
+3. 等三个容器全部健康后打开 `http://127.0.0.1:8501`；
+4. 重复双击时复用现有健康服务，不启动第二套。
+
+私有 secrets、PostgreSQL 和应用数据保存在 `artifacts/private/docker-console/`，不会进入 Git。双击 `关闭Docker版OmniSignal总控台.cmd` 只停止本项目容器，保留数据供下次启动。
+
+> 如果本机 8010 或 8501 已被其他服务占用，入口会在构建前停止并提示，不会结束占用进程。先关闭本地 Python 版总控台，或在 PowerShell 中用 `scripts/start-docker-console.ps1 -ApiPort 18010 -UiPort 18501` 指定其他端口。
+
+也可以手动使用 Compose。只设置数据库密码时，UI 为只读模式：
+
 数据库密码只放在当前终端环境中：
 
 ```powershell
@@ -116,7 +129,7 @@ $env:OMNISIGNAL_DB_PASSWORD = "replace-with-a-strong-local-password"
 docker compose up --build
 ```
 
-服务默认只绑定本机回环地址。运行数据、数据库、备份、日志与原始归档均被排除在 Git 仓库之外。
+服务默认只绑定本机回环地址。运行数据、数据库、备份、日志与原始归档均被排除在 Git 仓库之外。SearXNG 仍是可选采集依赖，不会因为打开 Docker 总控台而自动请求外部搜索引擎。
 
 发布前或升级后可运行 `.\scripts\test-clean-environment.ps1`，在隔离的空数据库上验证构建、迁移、数据库中断恢复、API 重启和调度关闭；它不会发起采集。完整升级与回退步骤见 [部署生命周期](docs/deployment_lifecycle.md)。
 
