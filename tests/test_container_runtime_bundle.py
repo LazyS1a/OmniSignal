@@ -52,3 +52,12 @@ def test_application_image_contains_streamlit_runtime() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "--extra signals --extra ui" in dockerfile
     assert "EXPOSE 8000 8501" in dockerfile
+
+
+def test_ci_scans_the_image_built_by_compose() -> None:
+    compose = yaml.safe_load((ROOT / "compose.yaml").read_text(encoding="utf-8"))
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    image = compose["services"]["api"]["image"]
+    assert image == "omnisignal-app:${OMNISIGNAL_VERSION:-0.2.0}"
+    assert "image-ref: omnisignal-app:0.2.0" in workflow
