@@ -35,9 +35,28 @@ def test_docker_start_script_keeps_secrets_private_and_scheduler_off() -> None:
     assert '"http://127.0.0.1:$UiPort"' in script
 
 
+def test_docker_start_script_supports_windows_powershell_51_crypto() -> None:
+    script = (ROOT / "scripts" / "start-docker-console.ps1").read_text(encoding="utf-8")
+
+    assert "RandomNumberGenerator]::Create()" in script
+    assert ".GetBytes($bytes)" in script
+    assert "SHA256]::Create()" in script
+    assert ".ComputeHash($bytes)" in script
+    assert "[BitConverter]::ToString" in script
+    assert "::Fill(" not in script
+    assert "::HashData(" not in script
+    assert "[Convert]::ToHexString" not in script
+
+
 def test_docker_stop_script_preserves_data_and_volumes() -> None:
     script = (ROOT / "scripts" / "stop-docker-console.ps1").read_text(encoding="utf-8")
 
     assert "docker compose down --remove-orphans" in script
     assert " down -v" not in script
     assert "Remove-Item" not in script
+
+
+def test_local_stop_script_reads_chinese_paths_as_utf8_in_windows_powershell() -> None:
+    script = (ROOT / "scripts" / "stop-console.ps1").read_text(encoding="utf-8")
+
+    assert "Get-Content -LiteralPath $statePath -Raw -Encoding utf8" in script

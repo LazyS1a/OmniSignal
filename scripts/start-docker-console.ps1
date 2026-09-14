@@ -10,8 +10,13 @@ $secretPath = Join-Path $privateRoot 'secrets.json'
 
 function New-RandomHex([int]$ByteCount) {
     $bytes = New-Object byte[] $ByteCount
-    [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-    return [Convert]::ToHexString($bytes).ToLowerInvariant()
+    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $generator.GetBytes($bytes)
+    } finally {
+        $generator.Dispose()
+    }
+    return ([BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant()
 }
 
 function Get-OrCreateSecrets {
@@ -42,7 +47,13 @@ function Get-OrCreateSecrets {
 
 function Get-Sha256([string]$Value) {
     $bytes = [Text.Encoding]::UTF8.GetBytes($Value)
-    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $algorithm.ComputeHash($bytes)
+    } finally {
+        $algorithm.Dispose()
+    }
+    return ([BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant()
 }
 
 & docker info --format '{{.ServerVersion}}' 2>$null | Out-Null

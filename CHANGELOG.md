@@ -12,6 +12,7 @@
 ### Changed
 
 - 应用镜像加入固定版本 Streamlit 运行依赖；Compose 新增只绑定本机回环地址的 UI 服务。
+- 修复 Windows PowerShell 5.1 下 Docker 启动器加密 API 不兼容，以及中文项目路径导致本地关闭器误判状态文件损坏的问题。
 
 ### Boundaries
 

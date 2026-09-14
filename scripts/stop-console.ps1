@@ -5,7 +5,7 @@ if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
     Write-Output 'OmniSignal console is not running.'
     exit 0
 }
-try { $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json } catch { throw 'Console state file is unreadable.' }
+try { $state = Get-Content -LiteralPath $statePath -Raw -Encoding utf8 | ConvertFrom-Json } catch { throw 'Console state file is unreadable.' }
 $process = Get-CimInstance Win32_Process -Filter "ProcessId = $($state.supervisor_pid)" -ErrorAction SilentlyContinue
 if (-not $process) {
     Write-Output 'OmniSignal console is not running; the state file is stale.'
