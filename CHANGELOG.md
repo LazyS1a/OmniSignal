@@ -6,6 +6,8 @@
 
 ### Added
 
+- 新增视觉工作台骨架：支持创建从零按层创作与参考图反向重建工程，持久化来源声明和可编辑图层清单。
+- 新增受 operator 保护的视觉工程 API，以及图片模型、Photoshop UXP/MCP 和竞品样本采集的显式能力状态。
 - 新增 Docker 版 Windows 双击启动/关闭入口，一键启动 PostgreSQL、FastAPI 与 Streamlit 总控台。
 - Docker 总控台首次启动生成本机私有 secrets 和独立数据目录，支持健康等待、幂等复用与端口冲突前置检查。
 
@@ -16,6 +18,7 @@
 
 ### Boundaries
 
+- 视觉工作台当前不调用付费图片模型、不自动下载参考图、不控制 Photoshop，也不宣称反向恢复原始 PSD。
 - Docker 总控台不会自动启用调度或发起采集；SearXNG 仍为独立可选依赖。
 - 关闭入口保留 PostgreSQL 与应用数据，不删除卷或私有 secrets。
 

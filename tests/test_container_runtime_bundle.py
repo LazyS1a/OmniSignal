@@ -31,6 +31,7 @@ def test_read_only_api_has_a_separate_writable_application_data_mount() -> None:
     mounts = {entry["target"]: entry for entry in api["volumes"]}
     assert mounts["/app/data"]["type"] == "bind"
     assert "OMNISIGNAL_APP_DATA_DIR" in mounts["/app/data"]["source"]
+    assert api["environment"]["OMNISIGNAL_APP_DATA_DIR"] == "/app/data"
 
 
 def test_compose_bundles_local_only_streamlit_console() -> None:

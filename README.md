@@ -65,6 +65,7 @@ flowchart LR
 - **原始证据与血缘**：压缩保存允许字段范围内的原始响应，并关联标准记录、配置版本和处理版本。
 - **确定性标准化**：统一来源记录结构，保留质量状态、实体别名命中、上下文关系和重复候选。
 - **统一运维控制面**：FastAPI 提供有界查询与受认证控制接口；Streamlit 展示来源、任务、运行、趋势、检索结果、质量和审计。
+- **视觉工程骨架**：总控台可创建“从零按层创作”或“参考图反向重建”工程，生成可追溯的图层清单；当前不调用图片模型、不下载参考图，也不控制 Photoshop。
 - **本地优先部署**：提供 Windows 总控台入口、Docker Compose、迁移、健康检查、备份恢复脚本和 CI。
 
 ## 已实现的数据链路
@@ -117,6 +118,8 @@ Docker Desktop 显示 Engine running 后，可直接双击 `用Docker打开OmniS
 4. 重复双击时复用现有健康服务，不启动第二套。
 
 私有 secrets、PostgreSQL 和应用数据保存在 `artifacts/private/docker-console/`，不会进入 Git。双击 `关闭Docker版OmniSignal总控台.cmd` 只停止本项目容器，保留数据供下次启动。
+
+视觉工作台的工程清单也保存在应用数据目录中；容器重启不会丢失。当前只创建元数据和图层规划，模型、素材采集与 Photoshop 适配器保持断开。设计与接入边界见 [视觉工作台](docs/visual_workbench.md)。
 
 > 如果本机 8010 或 8501 已被其他服务占用，入口会在构建前停止并提示，不会结束占用进程。先关闭本地 Python 版总控台，或在 PowerShell 中用 `scripts/start-docker-console.ps1 -ApiPort 18010 -UiPort 18501` 指定其他端口。
 
@@ -172,6 +175,7 @@ docs/              接口、连接器、运维、恢复说明与视觉资产
 - 不把相对趋势、联想排名或 Top-K 结果样本表述为真实绝对搜索次数。
 - 不保存非必要个人信息；凭证只通过环境变量引用进入运行进程。
 - 授权 Hook 与逆向实验仅面向自有、开源练习样本或明确授权目标，并与核心服务隔离。
+- 视觉参考图只登记来源与使用依据；当前不会自动下载、破解原始工程或把重建图层表述为原始 PSD。
 - 项目止于可靠采集、标准化、质量与运维能力，不评价产品，也不生成产品改进建议。
 
 ## 项目状态与协作
@@ -181,6 +185,7 @@ docs/              接口、连接器、运维、恢复说明与视觉资产
 - 版本变化见 [CHANGELOG.md](CHANGELOG.md)
 - 开发约定见 [CONTRIBUTING.md](CONTRIBUTING.md)
 - 连接器契约见 [Connector SDK](docs/connector_sdk.md)
+- 视觉工程与模型 / Photoshop 适配边界见 [视觉工作台](docs/visual_workbench.md)
 - 部署恢复见 [部署生命周期](docs/deployment_lifecycle.md) 与 [恢复手册](docs/recovery_runbook.md)
 - 安全问题见 [SECURITY.md](SECURITY.md)
 

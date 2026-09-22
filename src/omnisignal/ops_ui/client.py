@@ -110,6 +110,12 @@ class OpsApiClient:
         return self._request_json("POST", "/ops/search-profiles", json_body=profile,
                                   bearer_token=bearer_token, attempts=1)
 
+    def create_visual_project(self, project: dict[str, object], *, bearer_token: str) -> dict[str, object]:
+        return self._request_json(
+            "POST", "/ops/visual/projects", json_body=project,
+            bearer_token=bearer_token, attempts=1,
+        )
+
     def start_collection_job(
         self,
         *,

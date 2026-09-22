@@ -22,6 +22,7 @@ from omnisignal.ops_ui.presentation import safe_api_label
 from omnisignal.ops_ui.style import APP_CSS
 from omnisignal.ops_ui.visibility import render_visibility
 from omnisignal.ops_ui.trends import render_trends
+from omnisignal.ops_ui.visual import render_visual_workbench
 
 
 CACHE_TTL_SECONDS = 15
@@ -185,6 +186,22 @@ def main() -> None:
         load_ops_data.clear()
         return result
 
+    def create_visual_project(project: dict[str, object]) -> dict[str, object] | None:
+        bearer = control_token or local_console_token
+        if not bearer:
+            st.error("没有可用的 operator 身份。")
+            return None
+        try:
+            result = OpsApiClient(base_url=api_base_url, retries=0).create_visual_project(
+                project, bearer_token=bearer,
+            )
+        except (OpsApiError, ValueError) as exc:
+            st.error(str(exc))
+            st.caption("创建不会自动重试，也不会调用图片模型或 Photoshop。")
+            return None
+        load_ops_data.clear()
+        return result
+
     def overview_page() -> None:
         render_overview(load)
 
@@ -218,6 +235,12 @@ def main() -> None:
     def audit_page() -> None:
         render_audit(load)
 
+    def visual_page() -> None:
+        render_visual_workbench(
+            load,
+            create_project=create_visual_project if (control_token or local_console_token) else None,
+        )
+
     pages = {
         "运行与来源": [
             st.Page(overview_page, title="运行总览", icon="📊", default=True),
@@ -231,6 +254,9 @@ def main() -> None:
             st.Page(records_page, title="标准记录", icon="🗂️"),
             st.Page(quality_page, title="数据质量", icon="🧪"),
             st.Page(audit_page, title="审计记录", icon="🛡️"),
+        ],
+        "视觉实验": [
+            st.Page(visual_page, title="视觉工作台", icon="🖼️"),
         ],
     }
     navigation = st.navigation(pages, position="sidebar", expanded=True)

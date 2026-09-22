@@ -29,6 +29,7 @@ from .ops import router as ops_router
 from .visibility import router as visibility_router
 from .web_visibility import router as web_visibility_router
 from .trends import router as trends_router
+from .visual import router as visual_router
 
 
 LOGGER = logging.getLogger("omnisignal.api")
@@ -46,6 +47,7 @@ def create_app(
     collection_executor: object | None = None,
     collection_readiness: object | None = None,
     search_profiles_path: Path | None = None,
+    visual_projects_path: Path | None = None,
 ) -> FastAPI:
     active_settings = settings or Settings.from_env()
     configure_logging(active_settings.log_level)
@@ -62,6 +64,10 @@ def create_app(
     )
     from omnisignal.search_profiles import SearchProfileStore
     profile_store = SearchProfileStore(search_profiles_path or PROJECT_ROOT / "data" / "search_profiles", active_catalog)
+    from omnisignal.visual_workbench import VisualProjectStore, default_visual_projects_directory
+    visual_store = VisualProjectStore(
+        visual_projects_path or default_visual_projects_directory(PROJECT_ROOT)
+    )
     owns_collection_executor = collection_executor is None
     active_collection_executor = collection_executor or CollectionExecutor(
         engine=active_engine,
@@ -114,6 +120,7 @@ def create_app(
     app.state.registry_path = active_registry_path
     app.state.collection_catalog = active_catalog
     app.state.search_profiles = profile_store
+    app.state.visual_projects = visual_store
     app.state.snapshot_schedule_catalog = active_schedule_catalog
     app.state.snapshot_scheduler = active_snapshot_scheduler
     app.state.collection_executor = active_collection_executor
@@ -127,6 +134,7 @@ def create_app(
     app.include_router(trends_router)
     app.include_router(control_router)
     app.include_router(collection_router)
+    app.include_router(visual_router)
 
     @app.exception_handler(SQLAlchemyError)
     async def database_unavailable(request: Request, exc: SQLAlchemyError) -> Response:
