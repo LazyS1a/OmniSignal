@@ -116,6 +116,40 @@ class OpsApiClient:
             bearer_token=bearer_token, attempts=1,
         )
 
+    def create_visual_demo(self, *, bearer_token: str) -> dict[str, object]:
+        return self._request_json(
+            "POST", "/ops/visual/demo-project", bearer_token=bearer_token, attempts=1,
+        )
+
+    def upload_visual_image(self, project_id: str, content: bytes, *, bearer_token: str) -> dict[str, object]:
+        _validate_visual_project_id(project_id)
+        if not 0 < len(content) <= 5_000_000:
+            raise ValueError("PNG must be between 1 byte and 5 MB")
+        return self._request_json(
+            "POST", f"/ops/visual/projects/{project_id}/image", binary_body=content,
+            bearer_token=bearer_token, extra_headers={"Content-Type": "image/png"}, attempts=1,
+        )
+
+    def download_visual_image(self, project_id: str, *, bearer_token: str) -> bytes:
+        _validate_visual_project_id(project_id)
+        response = self._request(
+            "GET", f"/ops/visual/projects/{project_id}/image", bearer_token=bearer_token,
+            attempts=self.retries + 1, accept="image/png",
+        )
+        if not response.headers.get("content-type", "").lower().startswith("image/png"):
+            raise OpsApiError("视觉工程没有返回 PNG 图片")
+        return response.content
+
+    def download_visual_bundle(self, project_id: str, *, bearer_token: str) -> bytes:
+        _validate_visual_project_id(project_id)
+        response = self._request(
+            "GET", f"/ops/visual/projects/{project_id}/bundle", bearer_token=bearer_token,
+            attempts=self.retries + 1, accept="application/zip",
+        )
+        if not response.headers.get("content-type", "").lower().startswith("application/zip"):
+            raise OpsApiError("视觉工程没有返回分层 ZIP")
+        return response.content
+
     def start_collection_job(
         self,
         *,
@@ -177,6 +211,7 @@ class OpsApiClient:
         *,
         params: Mapping[str, object] | None = None,
         json_body: Mapping[str, object] | None = None,
+        binary_body: bytes | None = None,
         bearer_token: str | None = None,
         extra_headers: Mapping[str, str] | None = None,
         attempts: int,
@@ -187,6 +222,7 @@ class OpsApiClient:
             path,
             params=params,
             json_body=json_body,
+            binary_body=binary_body,
             bearer_token=bearer_token,
             extra_headers=extra_headers,
             attempts=attempts,
@@ -208,6 +244,7 @@ class OpsApiClient:
         *,
         params: Mapping[str, object] | None = None,
         json_body: Mapping[str, object] | None = None,
+        binary_body: bytes | None = None,
         bearer_token: str | None = None,
         extra_headers: Mapping[str, str] | None = None,
         attempts: int,
@@ -238,7 +275,7 @@ class OpsApiClient:
                     trust_env=False,
                     headers=headers,
                 ) as client:
-                    with client.stream(method, path, params=safe_params, json=json_body) as response:
+                    with client.stream(method, path, params=safe_params, json=json_body, content=binary_body) as response:
                         if response.status_code < 400:
                             response = self._read_bounded(response)
             except httpx.RequestError as exc:
@@ -297,6 +334,11 @@ def _validate_ops_path(path: str) -> None:
     parsed = urlsplit(path)
     if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment or not parsed.path.startswith("/ops/"):
         raise ValueError("client only accepts read-only /ops paths")
+
+
+def _validate_visual_project_id(project_id: str) -> None:
+    if re.fullmatch(r"visual_[a-f0-9]{32}", project_id) is None:
+        raise ValueError("visual project ID is invalid")
 
 
 def _validate_params(params: Mapping[str, object], *, limit_max: int = 200) -> dict[str, object]:

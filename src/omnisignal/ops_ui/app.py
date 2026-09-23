@@ -202,6 +202,58 @@ def main() -> None:
         load_ops_data.clear()
         return result
 
+    def create_visual_demo() -> dict[str, object] | None:
+        bearer = control_token or local_console_token
+        if not bearer:
+            st.error("没有可用的 operator 身份。")
+            return None
+        try:
+            result = OpsApiClient(base_url=api_base_url, retries=0).create_visual_demo(bearer_token=bearer)
+        except (OpsApiError, ValueError) as exc:
+            st.error(str(exc))
+            return None
+        load_ops_data.clear()
+        return result
+
+    def upload_visual_image(project_id: str, content: bytes) -> dict[str, object] | None:
+        bearer = control_token or local_console_token
+        if not bearer:
+            st.error("没有可用的 operator 身份。")
+            return None
+        try:
+            result = OpsApiClient(base_url=api_base_url, retries=0).upload_visual_image(
+                project_id, content, bearer_token=bearer,
+            )
+        except (OpsApiError, ValueError) as exc:
+            st.error(str(exc))
+            return None
+        load_ops_data.clear()
+        return result
+
+    def fetch_visual_image(project_id: str) -> bytes | None:
+        bearer = control_token or local_console_token
+        if not bearer:
+            return None
+        try:
+            return OpsApiClient(base_url=api_base_url, max_response_bytes=10 * 1024 * 1024).download_visual_image(
+                project_id, bearer_token=bear,
+            )
+        except (OpsApiError, ValueError) as exc:
+            st.error(str(exc))
+            return None
+
+    def fetch_visual_bundle(project_id: str) -> bytes | None:
+        bearer = control_token or local_console_token
+        if not bearer:
+            return None
+        try:
+            return OpsApiClient(base_url=api_base_url, max_response_bytes=10 * 1024 * 1024).download_visual_bundle(
+                project_id, bearer_token=bear,
+            )
+        except (OpsApiError, ValueError) as exc:
+            st.error(str(exc))
+            return None
+
     def overview_page() -> None:
         render_overview(load)
 
@@ -236,9 +288,14 @@ def main() -> None:
         render_audit(load)
 
     def visual_page() -> None:
+        can_write = bool(control_token or local_console_token)
         render_visual_workbench(
             load,
-            create_project=create_visual_project if (control_token or local_console_token) else None,
+            create_project=create_visual_project if can_write else None,
+            create_demo=create_visual_demo if can_write else None,
+            upload_image=upload_visual_image if can_write else None,
+            fetch_image=fetch_visual_image if can_write else None,
+            fetch_bundle=fetch_visual_bundle if can_write else None,
         )
 
     pages = {

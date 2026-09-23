@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 import httpx
+from PIL import Image
 from pydantic import ValidationError
 import pytest
 import respx
@@ -35,6 +39,13 @@ def definition(**changes) -> dict[str, object]:
     }
     value.update(changes)
     return value
+
+
+def sample_png_bytes() -> bytes:
+    image = Image.new("RGB", (320, 400), "#335577")
+    output = BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
 
 
 def test_visual_contract_builds_distinct_layer_skeletons(tmp_path: Path) -> None:
@@ -105,6 +116,50 @@ def test_visual_store_is_atomic_and_reloadable(tmp_path: Path) -> None:
     assert restarted.list()["items"][0]["target_brand"] == "示例品牌"
 
 
+def test_demo_layers_composite_to_preview_and_survive_restart(tmp_path: Path) -> None:
+    store = VisualProjectStore(tmp_path / "visual")
+    project = store.create_demo(actor="operator-one")
+    assert project.image is not None and project.image.kind == "demo"
+    assert len(project.regions) == 7
+    assert all(layer.asset_file for layer in project.layers)
+    bundle = store.read_bundle(project.project_id)
+    assert bundle is not None
+    with ZipFile(BytesIO(bundle)) as archive:
+        assert "project.json" in archive.namelist()
+        preview = Image.open(BytesIO(archive.read("image.png"))).convert("RGBA")
+        reconstructed = Image.new("RGBA", preview.size)
+        for layer in project.layers:
+            assert layer.asset_file is not None
+            assert layer.asset_sha256 == sha256(archive.read(layer.asset_file)).hexdigest()
+            reconstructed = Image.alpha_composite(
+                reconstructed, Image.open(BytesIO(archive.read(layer.asset_file))).convert("RGBA")
+            )
+        assert reconstructed.tobytes() == preview.tobytes()
+    restarted = VisualProjectStore(store.directory)
+    assert restarted.get(project.project_id) == project
+    assert sha256(restarted.read_image(project.project_id)).hexdigest() == project.image.stored_sha256
+    product_layer = store.directory / project.project_id / "layers" / "product.png"
+    product_layer.write_bytes(b"damaged")
+    with pytest.raises(ValueError, match="integrity check"):
+        restarted.read_bundle(project.project_id)
+
+
+def test_uploaded_png_is_bounded_persisted_and_not_called_an_analysis(tmp_path: Path) -> None:
+    store = VisualProjectStore(tmp_path / "visual")
+    project = store.create(VisualProjectCreate(**definition()), actor="operator-one")
+    raw = sample_png_bytes()
+    updated = store.attach_image(project.project_id, raw)
+    assert updated.image is not None and updated.image.kind == "uploaded"
+    assert updated.image.original_sha256 == sha256(raw).hexdigest()
+    assert updated.analysis_status == "not_requested"
+    assert updated.regions == ()
+    assert VisualProjectStore(store.directory).read_image(project.project_id)
+    with pytest.raises(ValueError, match="already has an image"):
+        store.attach_image(project.project_id, raw)
+    with pytest.raises(ValueError, match="decoded"):
+        store.attach_image(project.project_id, b"not a png")
+
+
 def test_visual_default_directory_stays_outside_repo_when_app_data_is_configured(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -151,9 +206,26 @@ def test_visual_api_requires_operator_and_never_executes_adapters(tmp_path: Path
             loaded = await client.get(f"/ops/visual/projects/{project['project_id']}")
             assert loaded.json() == project
             assert (await client.get("/ops/visual/projects/visual_bad")).status_code == 404
+            image_path = f"/ops/visual/projects/{project['project_id']}/image"
+            assert (await client.post(image_path, content=sample_png_bytes(), headers={"Content-Type": "image/png"})).status_code == 401
+            assert (await client.post(image_path, content=b"bad", headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "text/plain"})).status_code == 415
+            assert (await client.post(image_path, content=b"x" * 5_000_001, headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "image/png"})).status_code == 413
+            uploaded = await client.post(image_path, content=sample_png_bytes(), headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "image/png"})
+            assert uploaded.status_code == 200
+            assert uploaded.json()["image"]["kind"] == "uploaded"
+            assert (await client.get(image_path)).status_code == 401
+            image_response = await client.get(image_path, headers={"Authorization": f"Bearer {TOKEN}"})
+            assert image_response.status_code == 200
+            assert image_response.headers["content-type"] == "image/png"
+            demo = await client.post("/ops/visual/demo-project", headers={"Authorization": f"Bearer {TOKEN}"})
+            assert demo.status_code == 200
+            assert demo.json()["image"]["kind"] == "demo"
+            bundle = await client.get(f"/ops/visual/projects/{demo.json()['project_id']}/bundle", headers={"Authorization": f"Bearer {TOKEN}"})
+            assert bundle.status_code == 200
+            assert ZipFile(BytesIO(bundle.content)).namelist()
 
     asyncio.run(scenario())
-    assert len(list((tmp_path / "visual-projects").glob("visual_*"))) == 1
+    assert len(list((tmp_path / "visual-projects").glob("visual_*"))) == 2
     engine.dispose()
 
 
@@ -199,8 +271,61 @@ def test_visual_page_creates_metadata_only_skeleton() -> None:
     app.text_input[0].input("咖啡视觉实验")
     app.text_input[1].input("咖啡")
     app.text_input[2].input("示例品牌")
-    app.button[0].click().run(timeout=10)
+    next(button for button in app.button if button.label == "创建骨架工程").click().run(timeout=10)
     assert not app.exception
     body = app.session_state["created_visual_body"]
     assert body["workflow"] == "from_scratch"
     assert body["source"] is None
+
+
+def _visual_demo_page_fixture() -> None:
+    from io import BytesIO
+
+    from PIL import Image
+    import streamlit as st
+    from omnisignal.ops_ui.visual import render_visual_workbench
+
+    project_id = "visual_" + "c" * 32
+    preview = BytesIO()
+    Image.new("RGB", (320, 400), "#335577").save(preview, format="PNG")
+
+    def load(path: str, params=None):
+        del params
+        if path == "/ops/visual/capabilities":
+            return {
+                "image_generation": {"status": "not_configured"},
+                "photoshop": {"status": "not_configured"},
+                "collection": {"status": "not_connected"},
+            }
+        if path == "/ops/visual/projects":
+            return {"items": [{
+                "project_id": project_id, "name": "NOVA BREW", "workflow": "from_scratch",
+                "category_keyword": "咖啡", "target_brand": "NOVA BREW", "status": "draft",
+            }] if st.session_state.get("demo_created") else [], "count": int(bool(st.session_state.get("demo_created")))}
+        if path == f"/ops/visual/projects/{project_id}":
+            return {
+                "image": {"kind": "demo", "width": 1080, "height": 1350, "original_sha256": "a" * 64},
+                "regions": [{"layer_id": "product", "x": 390, "y": 300, "width": 620, "height": 930}],
+                "layers": [{"name": "产品主体", "kind": "product", "editable": True,
+                            "status": "ready", "provenance": "synthetic_composition", "asset_file": "layers/product.png"}],
+            }
+        raise AssertionError(path)
+
+    def create_demo():
+        st.session_state["demo_created"] = True
+        return {"project_id": project_id}
+
+    render_visual_workbench(
+        load,
+        create_demo=create_demo,
+        fetch_image=lambda _project_id: preview.getvalue(),
+        fetch_bundle=lambda _project_id: b"demo bundle",
+    )
+
+
+def test_visual_page_one_click_demo_shows_image_and_known_regions() -> None:
+    app = AppTest.from_function(_visual_demo_page_fixture).run(timeout=10)
+    next(button for button in app.button if button.label == "创建合成咖啡海报").click().run(timeout=10)
+    assert not app.exception
+    assert app.session_state["demo_created"] is True
+    assert any("合成时记录" in caption.value for caption in app.caption)

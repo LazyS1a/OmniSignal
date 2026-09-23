@@ -15,10 +15,20 @@ from .pages import page_header
 
 Loader = Callable[[str, Mapping[str, object] | None], dict[str, object] | None]
 CreateAction = Callable[[dict[str, object]], dict[str, object] | None]
+DemoAction = Callable[[], dict[str, object] | None]
+UploadAction = Callable[[str, bytes], dict[str, object] | None]
+FetchAction = Callable[[str], bytes | None]
 
 
-def render_visual_workbench(load: Loader, create_project: CreateAction | None = None) -> None:
-    page_header("视觉工作台", "建立可追溯的视觉项目与图层工程；当前骨架不会调用模型或控制 Photoshop。")
+def render_visual_workbench(
+    load: Loader,
+    create_project: CreateAction | None = None,
+    create_demo: DemoAction | None = None,
+    upload_image: UploadAction | None = None,
+    fetch_image: FetchAction | None = None,
+    fetch_bundle: FetchAction | None = None,
+) -> None:
+    page_header("视觉工作台", "创建分层海报示例、上传本地 PNG，并查看每层的制作依据。")
     capabilities = load("/ops/visual/capabilities", None)
     projects = load("/ops/visual/projects", None)
     if capabilities is None or projects is None:
@@ -36,6 +46,15 @@ def render_visual_workbench(load: Loader, create_project: CreateAction | None = 
     cols[0].metric("图片模型", _status_label(image_capability.get("status")))
     cols[1].metric("Photoshop", _status_label(photoshop_capability.get("status")))
     cols[2].metric("竞品采集", _status_label(collection_capability.get("status")))
+
+    st.subheader("没有图片？先跑示例")
+    st.caption("一键创建虚构咖啡品牌海报：产品、背景、装饰和文字分别保存为 PNG 图层。位置标注来自制作过程。")
+    if st.button("创建合成咖啡海报", disabled=create_demo is None):
+        result = create_demo() if create_demo else None
+        if result is not None:
+            st.session_state["visual_created_message"] = "合成示例已创建，可在下方查看预览和下载图层。"
+            st.session_state["visual_selected_project"] = result.get("project_id", "")
+            st.rerun()
 
     items = projects.get("items") if isinstance(projects.get("items"), list) else []
     with st.expander("新建图层工程", expanded=not items):
@@ -117,6 +136,7 @@ def render_visual_workbench(load: Loader, create_project: CreateAction | None = 
         "查看图层清单",
         list(by_id),
         format_func=lambda project_id: f"{by_id[project_id].get('name', project_id)} · {project_id[-6:]}",
+        key="visual_selected_project",
     )
     detail = load(f"/ops/visual/projects/{selected}", None)
     if detail is None:
@@ -126,6 +146,52 @@ def render_visual_workbench(load: Loader, create_project: CreateAction | None = 
         f"生成：{detail.get('generation_status', 'unknown')} · "
         f"Photoshop：{detail.get('photoshop_status', 'unknown')}"
     )
+    image_meta = _mapping(detail.get("image"))
+    if image_meta:
+        st.subheader("图片预览")
+        st.caption(
+            f"{image_meta.get('width')} × {image_meta.get('height')} px · "
+            f"已记录 SHA-256：{str(image_meta.get('original_sha256', ''))[:12]}… · "
+            f"{'合成示例' if image_meta.get('kind') == 'demo' else '本地上传'}"
+        )
+        if fetch_image is not None:
+            content = fetch_image(selected)
+            if content is not None:
+                st.image(content, width=420)
+        else:
+            st.info("输入操作令牌后可查看图片。")
+        regions = detail.get("regions") if isinstance(detail.get("regions"), list) else []
+        if regions:
+            st.caption("下表是合成时记录的已知位置，不是模型识别结果。")
+            st.dataframe([
+                {
+                    "图层 ID": region.get("layer_id", ""),
+                    "位置 X/Y": f"{region.get('x', '')} / {region.get('y', '')}",
+                    "宽 × 高": f"{region.get('width', '')} × {region.get('height', '')}",
+                }
+                for region in regions if isinstance(region, dict)
+            ], hide_index=True, width="stretch")
+        if image_meta.get("kind") == "demo" and fetch_bundle is not None:
+            bundle = fetch_bundle(selected)
+            if bundle is not None:
+                st.download_button(
+                    "下载示例分层 ZIP",
+                    data=bundle,
+                    file_name=f"{selected}-layers.zip",
+                    mime="application/zip",
+                )
+    elif upload_image is not None:
+        uploaded = st.file_uploader("上传本地 PNG（可稍后再做）", type=["png"], key=f"visual_upload_{selected}")
+        if uploaded is not None:
+            st.caption("上传后保存图片尺寸与 SHA-256；普通上传图暂不自动识别元素。")
+            if st.button("保存图片到工程", key=f"visual_save_{selected}"):
+                if uploaded.size > 5_000_000:
+                    st.error("图片不能超过 5 MB。")
+                else:
+                    result = upload_image(selected, uploaded.getvalue())
+                    if result is not None:
+                        st.session_state["visual_created_message"] = "图片已保存到工程。"
+                        st.rerun()
     layers = detail.get("layers") if isinstance(detail.get("layers"), list) else []
     st.dataframe(
         [
@@ -136,6 +202,7 @@ def render_visual_workbench(load: Loader, create_project: CreateAction | None = 
                 "可编辑": "是" if layer.get("editable") else "否",
                 "状态": layer.get("status", ""),
                 "来源": layer.get("provenance", ""),
+                "图层文件": layer.get("asset_file") or "—",
             }
             for index, layer in enumerate(layers) if isinstance(layer, dict)
         ],

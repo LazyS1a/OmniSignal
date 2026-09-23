@@ -134,6 +134,26 @@ class LayerSpec(StrictModel):
     editable: bool
     status: str = Field(default="placeholder", pattern=r"placeholder|ready|reconstructed")
     provenance: str = Field(min_length=1, max_length=120)
+    asset_file: str | None = Field(default=None, pattern=r"layers/[a-z][a-z0-9_]{1,47}\.png")
+    asset_sha256: str | None = Field(default=None, pattern=r"[a-f0-9]{64}")
+
+
+class VisualImage(StrictModel):
+    kind: str = Field(pattern=r"demo|uploaded")
+    width: int = Field(ge=1, le=4096)
+    height: int = Field(ge=1, le=4096)
+    original_sha256: str = Field(pattern=r"[a-f0-9]{64}")
+    stored_sha256: str = Field(pattern=r"[a-f0-9]{64}")
+    byte_length: int = Field(ge=1, le=10_000_000)
+
+
+class ImageRegion(StrictModel):
+    layer_id: str = Field(pattern=r"[a-z][a-z0-9_]{1,47}")
+    x: int = Field(ge=0, le=4096)
+    y: int = Field(ge=0, le=4096)
+    width: int = Field(ge=1, le=4096)
+    height: int = Field(ge=1, le=4096)
+    basis: str = Field(pattern=r"synthetic_composition")
 
 
 class VisualProject(StrictModel):
@@ -144,6 +164,8 @@ class VisualProject(StrictModel):
     status: str = Field(default="draft", pattern=r"draft|ready_for_adapter|completed")
     definition: VisualProjectCreate
     layers: tuple[LayerSpec, ...] = Field(min_length=1, max_length=20)
+    image: VisualImage | None = None
+    regions: tuple[ImageRegion, ...] = Field(default=(), max_length=20)
     analysis_status: str = "not_requested"
     generation_status: str = "not_requested"
     photoshop_status: str = "not_configured"
