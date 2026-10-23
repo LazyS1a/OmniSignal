@@ -1115,8 +1115,11 @@ version = "0.2.0"
 source = { virtual = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "cryptography" },
+    { name = "cssselect" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "lxml" },
     { name = "pillow" },
     { name = "pluggy" },
     { name = "psycopg", extra = ["binary"] },
@@ -1159,9 +1162,12 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = "==1.19.1" },
+    { name = "cryptography", specifier = "==50.0.1" },
+    { name = "cssselect", specifier = "==1.5.0" },
     { name = "dlt", marker = "extra == 'api'", specifier = "==1.30.0" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "httpx", specifier = "==0.28.1" },
+    { name = "lxml", specifier = "==6.1.2" },
     { name = "pillow", specifier = "==12.3.0" },
     { name = "playwright", marker = "extra == 'browser'", specifier = "==1.62.0" },
     { name = "pluggy", specifier = "==1.6.0" },

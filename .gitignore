@@ -1,4 +1,7 @@
 .venv/
+frontend/node_modules/
+frontend/dist/
+outputs/
 .bootstrap-venv/
 .tools/
 __pycache__/

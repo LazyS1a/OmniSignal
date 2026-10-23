@@ -54,7 +54,7 @@ def test_supervisor_environment_is_local_and_keeps_paths_on_project_drive(tmp_pa
     assert environment["OMNISIGNAL_ENV"] == "development"
     assert "console.db" in environment["OMNISIGNAL_DATABASE_URL"]
     assert environment["OMNISIGNAL_API_BASE_URL"] == "http://127.0.0.1:18010"
-    assert environment["PYTHONPATH"].endswith(os.path.join("OmniSignal", "src"))
+    assert Path(environment["PYTHONPATH"]).resolve() == Path(__file__).resolve().parents[1] / "src"
     principals = load_control_principals(environment["OMNISIGNAL_CONTROL_PRINCIPALS_JSON"])
     assert len(principals) == 1 and principals[0].role == "operator"
     assert environment["OMNISIGNAL_LOCAL_CONSOLE_TOKEN"] == supervisor.console_token

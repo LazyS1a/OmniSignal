@@ -3,6 +3,8 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.toml text eol=lf
+*.lock text eol=lf
 *.md text eol=lf
 *.ps1 text eol=crlf
 *.cmd text eol=crlf
+/reverse_lab/samples/fixture_owned_client.txt text eol=lf

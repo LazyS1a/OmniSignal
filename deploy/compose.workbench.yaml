@@ -1,0 +1,35 @@
+services:
+  workbench:
+    image: ${OMNISIGNAL_WORKBENCH_IMAGE:-omnisignal-ad-workbench:local}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OMNISIGNAL_WORKBENCH_PORT:-8503}:8000"
+    environment:
+      OMNISIGNAL_WORKBENCH_DIR: /app/workbench-data
+      OMNISIGNAL_WORKBENCH_WORKER: "true"
+      OMNISIGNAL_WORKBENCH_SECURE_COOKIE: ${OMNISIGNAL_WORKBENCH_SECURE_COOKIE:-false}
+      OMNISIGNAL_PREPARATION_DIR: /app/legacy-preparation
+      OMNISIGNAL_KNOWLEDGE_DIR: /app/knowledge
+      OMNISIGNAL_KNOWLEDGE_SIGNING_KEY_FILE: /run/secrets/knowledge-signing.pem
+      OMNISIGNAL_KNOWLEDGE_KEY_ID: ${OMNISIGNAL_KNOWLEDGE_KEY_ID:-}
+      OMNISIGNAL_KNOWLEDGE_READ_TOKEN_SHA256: ${OMNISIGNAL_KNOWLEDGE_READ_TOKEN_SHA256:-}
+      OMNISIGNAL_WORKBENCH_MODEL_API_KEY: ${OMNISIGNAL_WORKBENCH_MODEL_API_KEY:-}
+      OMNISIGNAL_WORKBENCH_MODEL: ${OMNISIGNAL_WORKBENCH_MODEL:-}
+      OMNISIGNAL_WORKBENCH_MODEL_BASE_URL: ${OMNISIGNAL_WORKBENCH_MODEL_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT: ${OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT:-0}
+    volumes:
+      - ${OMNISIGNAL_WORKBENCH_DATA:?Set workbench data directory}:/app/workbench-data
+      - ${OMNISIGNAL_LEGACY_PREPARATION:?Set legacy preparation directory}:/app/legacy-preparation:ro
+      - ${OMNISIGNAL_PUBLISHED_DATA:?Set publication directory}:/app/knowledge
+      - ${OMNISIGNAL_SIGNING_KEY:?Set signing key file}:/run/secrets/knowledge-signing.pem:ro
+    mem_limit: 768m
+    cpus: 1.0
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    stop_grace_period: 180s
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}

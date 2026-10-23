@@ -4,6 +4,9 @@ version = "0.2.0"
 description = "Observable multi-source ingestion and normalization platform for public signals"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "cryptography==50.0.1",
+  "lxml==6.1.2",
+  "cssselect==1.5.0",
   "alembic==1.19.1",
   "fastapi==0.141.1",
   "httpx==0.28.1",
