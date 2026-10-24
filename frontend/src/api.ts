@@ -2,7 +2,8 @@ export type Purpose = 'brand' | 'conversion';
 export type Status = 'accepted' | 'pending' | 'supplemental' | 'excluded';
 export type Permission = 'allowed' | 'unknown' | 'denied';
 export type Permissions = { display: Permission; analysis: Permission; export: Permission };
-export type Suggestion = { kind: string; purposes: Purpose[]; brand: string; reason: string; description: string; ocr_text: string; source_image_id: string; provenance: string };
+export type DesignAnalysis = { palette: string; typography: string; composition: string; hierarchy: string; imagery: string; reusable_ideas: string; applicability: string; limitations: string };
+export type Suggestion = { kind: string; purposes: Purpose[]; brand: string; reason: string; description: string; ocr_text: string; source_image_id: string; provenance: string; model_version?: string; design?: DesignAnalysis };
 export type Session = { authenticated: boolean; user?: { actor: string; role: string }; csrf_token?: string; setup_required?: boolean };
 export type Asset = {
  id: string; title: string; brand?: string; source_url?: string; image_url?: string; thumbnail_url?: string;

@@ -100,6 +100,17 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
  await modal.getByRole('textbox', { name: '原始来源', exact: true }).fill(`https://example.com/synthetic-ui-test/${title.slice(-8)}`);
  await modal.getByRole('button', { name: '导入待处理', exact: true }).click();
  await page.getByRole('heading', { name: '把值得参考的，留下来。', exact: true }).waitFor();
+ // Render a clearly synthetic analysis response without making a paid model
+ // call or changing the isolated API's persisted review/permission state.
+ const assetRoute = /\/workbench\/api\/assets\/[^/]+$/;
+ if (ownedServer) await page.route(assetRoute, async route => {
+  const response = await route.fetch();
+  const asset = await response.json();
+  if (asset.title !== title) return route.fulfill({ response });
+  asset.analysis_suggestion_revision = asset.revision;
+  asset.analysis_suggestion = { kind: 'reference', purposes: [], brand: '', reason: '仅合成界面验证', description: '', ocr_text: '', source_image_id: asset.id, provenance: 'model_suggestion_requires_review', model_version: 'synthetic-browser-vlm', design: { palette: '合成测试配色', typography: '合成测试字体', composition: '合成测试版式', hierarchy: '合成测试层级', imagery: '合成测试图形', reusable_ideas: '合成测试方法', applicability: '合成测试场景', limitations: '仅测试展示，不构成真实设计分析' } };
+  await route.fulfill({ response, json: asset });
+ });
  await page.getByRole('heading', { name: title, exact: true }).click();
  modal = page.getByRole('dialog');
  await modal.getByRole('combobox', { name: '内容类型', exact: true }).selectOption('advertisement');
@@ -107,6 +118,11 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
  await modal.getByRole('textbox', { name: '判断理由', exact: true }).fill('仅验证界面审核流程的合成图，不作为真实广告质量验收。');
  await modal.locator('summary').filter({ hasText: '分析建议' }).click();
  check(await modal.getByRole('button', { name: '分析这张图片', exact: true }).isDisabled(), 'unapproved-image-analysis-disabled');
+ if (ownedServer) {
+  check(await modal.getByText('本次模型：synthetic-browser-vlm', { exact: true }).isVisible(), 'analysis-actual-model-metadata-visible');
+  check(await modal.locator('dt').count() === 8 && await modal.getByText('仅测试展示，不构成真实设计分析', { exact: true }).isVisible(), 'analysis-eight-design-dimensions-visible');
+  await page.unroute(assetRoute);
+ }
  await modal.locator('summary').filter({ hasText: '分析建议' }).click();
  await page.screenshot({ path: path.join(results, '02-review.png'), fullPage: true });
  await modal.getByRole('button', { name: '收录为广告素材', exact: true }).click();
