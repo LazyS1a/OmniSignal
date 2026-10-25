@@ -21,6 +21,8 @@ from omnisignal.knowledge.release import (
     _require, _text, digest, load_private_key, make_record, publish_release,
     read_latest, _history, publish_withdrawals,
 )
+from .review import DESIGN_FIELDS, fresh_review
+from .store import Conflict
 
 TAXONOMY_VERSION = "nova-1"
 PURPOSES = {"brand", "conversion"}
@@ -56,10 +58,13 @@ def _prepare_asset(asset: dict, stage: Path) -> dict:
     if image_source_url:
         image_source_url = _source_url(image_source_url)
     _text(asset.get("title"), "title")
+    material_kind = asset.get("kind", "advertisement")
+    _require(material_kind in {"advertisement", "reference"}, "reviewed material kind required")
     purposes = asset.get("purposes")
-    _require(isinstance(purposes, list) and bool(purposes)
+    _require(isinstance(purposes, list)
              and all(isinstance(value, str) and value in PURPOSES for value in purposes),
              "reviewed advertising purpose required")
+    _require(material_kind != "advertisement" or bool(purposes), "reviewed advertising purpose required")
     revision = asset.get("revision")
     _require(type(revision) is int and revision > 0, "positive asset revision required")
     image_path = asset.get("image_path")
@@ -85,8 +90,8 @@ def _prepare_asset(asset: dict, stage: Path) -> dict:
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(content)
 
-    # Editorial text is not promoted to visual/model evidence. The sole claim is
-    # a directly verified observation about this exact image's dimensions.
+    # Unreviewed descriptions and OCR remain annotations. Explicitly reviewed
+    # design knowledge is bound to this exact current revision and image hash.
     notes = {}
     for name in ("description", "ocr_text", "reason"):
         value = asset.get(name) or ""
@@ -96,9 +101,13 @@ def _prepare_asset(asset: dict, stage: Path) -> dict:
     _require(project_id is None or isinstance(project_id, str), "invalid project identifier")
     brand = asset.get("brand") or "未标注"
     _text(brand, "brand")
-    return {
+    try:
+        reviewed = fresh_review(asset)
+    except Conflict as exc:
+        raise KnowledgeError(str(exc)) from None
+    case = {
         "case_id": asset_id, "revision": revision, "title": asset["title"],
-        "summary_zh": "人工审核收录的广告素材：" + asset["title"],
+        "summary_zh": ("人工审核收录的设计参考：" if material_kind == "reference" else "人工审核收录的广告素材：") + asset["title"],
         "brand_or_team": brand, "review_status": "approved",
         "display_permission": "allowed", "permissions": permission_values,
         "analysis_version": "manual-ad-review-1", "model_version": "none",
@@ -112,10 +121,24 @@ def _prepare_asset(asset: dict, stage: Path) -> dict:
                     "text": f"图片尺寸为 {width} × {height} 像素。",
                     "source_ids": [], "image_ids": ["image-1"]}],
         "editorial": {"provenance": "operator_supplied_not_model_verified",
-                      "project_id": project_id, "marketing_purposes": sorted(set(purposes)),
+                      "project_id": project_id, "material_kind": material_kind,
+                      "marketing_purposes": sorted(set(purposes)),
                       "legacy_medium_fallback": True,
                       "medium_note": "数字图片兼容分类；实际投放媒介尚未确认。", **notes},
     }
+    if reviewed is not None:
+        case["summary_zh"] = reviewed["summary_zh"]
+        case["model_version"] = reviewed["model_version"]
+        case["analysis_version"] = "human-design-review-1"
+        case["claims"] = [
+            {"claim_id": "design-" + field, "kind": reviewed["design"][field]["kind"],
+             "text": reviewed["design"][field]["text"], "design_field": field,
+             "source_ids": [], "image_ids": ["image-1"]}
+            for field in DESIGN_FIELDS if reviewed["design"][field]["text"].strip()
+        ]
+        case["editorial"]["provenance"] = reviewed["provenance"]
+        case["editorial"]["reviewed_analysis"] = reviewed
+    return case
 
 
 def publish_assets(root: Path, assets: list[dict], actor: str) -> dict:

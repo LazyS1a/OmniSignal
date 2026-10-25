@@ -121,11 +121,12 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
  if (ownedServer) {
   check(await modal.getByText('本次模型：synthetic-browser-vlm', { exact: true }).isVisible(), 'analysis-actual-model-metadata-visible');
   check(await modal.locator('dt').count() === 8 && await modal.getByText('仅测试展示，不构成真实设计分析', { exact: true }).isVisible(), 'analysis-eight-design-dimensions-visible');
+  check(await modal.getByRole('button', { name: '采用建议填写', exact: true }).isDisabled(), 'suggestion-without-real-job-cannot-be-adopted');
   await page.unroute(assetRoute);
  }
  await modal.locator('summary').filter({ hasText: '分析建议' }).click();
  await page.screenshot({ path: path.join(results, '02-review.png'), fullPage: true });
- await modal.getByRole('button', { name: '收录为广告素材', exact: true }).click();
+ await modal.getByRole('button', { name: '收录素材', exact: true }).click();
  await modal.waitFor({ state: 'hidden' });
  await page.getByRole('button', { name: '素材库', exact: true }).click();
  await page.getByRole('heading', { name: title, exact: true }).waitFor();
@@ -138,6 +139,51 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
  await page.getByRole('button', { name: '清除筛选', exact: true }).click();
  await page.getByRole('heading', { name: title, exact: true }).waitFor();
  checks.push('real-import-review-purpose-filter-search');
+ if (ownedServer) {
+  await page.getByRole('heading', { name: title, exact: true }).click();
+  modal = page.getByRole('dialog');
+  await modal.getByRole('combobox', { name: '内容类型', exact: true }).selectOption('reference');
+  await modal.getByRole('checkbox', { name: '品牌广告', exact: true }).uncheck();
+  await modal.getByRole('textbox', { name: '判断理由', exact: true }).fill('这是一张自建合成设计参考图，不是实际广告，无需广告用途。');
+  await modal.locator('summary').filter({ hasText: '人工审阅的设计分析' }).click();
+  await modal.getByRole('textbox', { name: '审核版中文摘要', exact: true }).fill('人工审核的自有合成设计参考：绿色底色与细线矩形构成，供界面回归验证。');
+  const labels = ['配色', '字体', '构图与版式', '信息层级', '视觉手法', '可借鉴的方法', '适用场景', '证据与不确定项'];
+  for (const label of labels) {
+   await modal.getByRole('textbox', { name: `审核版${label}`, exact: true }).fill(`${label}：这是人工核对的合成测试说明，不代表真实案例或投放事实。`);
+   await modal.getByRole('combobox', { name: `${label}依据类型`, exact: true }).selectOption(label === '配色' ? 'visual_observation' : 'analysis_inference');
+  }
+  const confirmation = modal.getByRole('checkbox', { name: '我已逐项核对摘要、设计分析与依据类型，确认本次保存为人工审核版', exact: true });
+  check(!await confirmation.isChecked(), 'review-is-not-implicitly-confirmed');
+  await confirmation.check();
+  await modal.getByRole('textbox', { name: '审核版配色', exact: true }).fill('浅绿色背景和深绿色线框是画面直接可见内容。');
+  check(!await confirmation.isChecked(), 'editing-analysis-resets-explicit-confirmation');
+  await confirmation.check();
+  await page.screenshot({ path: path.join(results, '05-manual-review.png'), fullPage: true });
+  await modal.getByRole('button', { name: '收录素材', exact: true }).click();
+  await modal.waitFor({ state: 'hidden' });
+  const listed = await (await context.request.get(`${base}/workbench/api/assets?status=accepted`)).json();
+  const reference = listed.items.find(item => item.title === title);
+  check(reference.kind === 'reference' && reference.purposes.length === 0 && reference.status === 'accepted', 'reference-accepted-without-advertising-purpose');
+  check(reference.reviewed_analysis_status === 'current' && reference.reviewed_analysis?.summary_zh?.includes('人工审核') && Object.keys(reference.reviewed_analysis.design).length === 8 && reference.reviewed_analysis.design.palette.kind === 'visual_observation' && reference.reviewed_analysis.source_job_id === null, 'manual-reviewed-analysis-persisted-with-eight-evidence-fields');
+  await page.getByRole('heading', { name: title, exact: true }).click();
+  modal = page.getByRole('dialog');
+  await modal.getByRole('textbox', { name: '内容说明', exact: true }).fill('普通编辑，用于验证旧人工审核版本会过期。');
+  await modal.getByRole('button', { name: '收录素材', exact: true }).click();
+  await modal.waitFor({ state: 'hidden' });
+  const stale = await (await context.request.get(`${base}/workbench/api/assets/${reference.id}`)).json();
+  check(stale.reviewed_analysis_status === 'stale', 'ordinary-edit-invalidates-reviewed-analysis');
+  await page.getByRole('heading', { name: title, exact: true }).click();
+  modal = page.getByRole('dialog');
+  await modal.getByText('已过期 · 需要重审', { exact: true }).waitFor();
+  await modal.locator('summary').filter({ hasText: '人工审阅的设计分析' }).click();
+  check(await modal.getByRole('textbox', { name: '审核版配色', exact: true }).inputValue() === '浅绿色背景和深绿色线框是画面直接可见内容。', 'saved-analysis-survives-reopen');
+  await modal.getByRole('checkbox', { name: '我已逐项核对摘要、设计分析与依据类型，确认本次保存为人工审核版', exact: true }).check();
+  await modal.getByRole('button', { name: '收录素材', exact: true }).click();
+  await modal.waitFor({ state: 'hidden' });
+  const reviewed = await (await context.request.get(`${base}/workbench/api/assets/${reference.id}`)).json();
+  check(reviewed.reviewed_analysis_status === 'current' && reviewed.reviewed_analysis.revision === reviewed.revision, 'explicit-reconfirmation-binds-new-revision');
+ }
+
  await page.getByRole('button', { name: '采集', exact: true }).click();
  await page.getByRole('button', { name: '创建采集计划', exact: true }).click();
  const planTitle = `合成测试计划 · 暂停不联网 ${title.slice(-8)}`;
@@ -164,7 +210,7 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
   check(await page.getByRole('button', { name: '导入素材', exact: true }).count() === 0, 'viewer-cannot-import');
   await page.getByRole('heading', { name: title, exact: true }).click();
   await page.getByRole('textbox', { name: '判断理由', exact: true }).waitFor();
-  check(await page.getByRole('button', { name: '收录为广告素材', exact: true }).count() === 0, 'viewer-cannot-review');
+  check(await page.getByRole('button', { name: '收录素材', exact: true }).count() === 0, 'viewer-cannot-review');
   await page.getByRole('button', { name: '关闭', exact: true }).click();
  }
  check(pageErrors.length === 0, 'zero-browser-runtime-errors');

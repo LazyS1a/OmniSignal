@@ -5,7 +5,7 @@ type Configuration = { configured: boolean; status: string; reason?: string; req
 type Job = { id: string; status: string; reason?: string; suggestion?: Suggestion };
 const designLabels: Record<keyof DesignAnalysis, string> = { palette: '配色', typography: '字体', composition: '构图与版式', hierarchy: '信息层级', imagery: '视觉手法', reusable_ideas: '可借鉴的方法', applicability: '适用场景', limitations: '证据与不确定项' };
 
-export default function Analysis({ asset, canEdit, onAsset, onApply }: { asset: Asset; canEdit: boolean; onAsset: (a: Asset) => void; onApply: (s: Suggestion) => void }) {
+export default function Analysis({ asset, canEdit, onAsset, onApply }: { asset: Asset; canEdit: boolean; onAsset: (a: Asset) => void; onApply: (s: Suggestion, jobId: string) => void }) {
  const [config, setConfig] = useState<Configuration | null>(null), [jobs, setJobs] = useState<Job[]>([]), [error, setError] = useState(''), [busy, setBusy] = useState(false), [refresh, setRefresh] = useState(0), [applied, setApplied] = useState(false);
  const running = jobs.some(job => ['queued', 'running', 'waiting_remote'].includes(job.status));
  useEffect(() => {
@@ -43,7 +43,7 @@ export default function Analysis({ asset, canEdit, onAsset, onApply }: { asset: 
   {suggestion && <div className="suggestion"><span className="eyebrow">模型建议 · 尚未审核</span>
    {suggestion.model_version && <p className="muted">本次模型：{suggestion.model_version}</p>}
    <p><strong>{{ advertisement: '广告素材', reference: '设计参考', uncertain: '尚待判断' }[suggestion.kind] || suggestion.kind}</strong>{suggestion.purposes.map(p => <span className={`tag ${p}`} key={p}>{purposeLabel[p]}</span>)}</p><p>{suggestion.reason}</p>{suggestion.description && <p className="muted">{suggestion.description}</p>}
-   {suggestion.design && <dl>{(Object.keys(designLabels) as Array<keyof DesignAnalysis>).map(key => <div key={key}><dt><strong>{designLabels[key]}</strong></dt><dd style={{ margin: '6px 0 16px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{suggestion.design?.[key] || '暂无可靠结论'}</dd></div>)}</dl>}
-   {!fresh && <p className="analysis-error">素材已修改，这份建议已过期。请重新分析。</p>}<button className="button secondary small" disabled={!canEdit || !fresh} onClick={() => { onApply(suggestion); setApplied(true); }}>采用建议填写</button>{applied && <p className="analysis-status" role="status">已填入表单。请核对内容，再选择收录或保留待处理。设计拆解保留在本次分析记录中。</p>}</div>}
+   {suggestion.design && <dl>{(Object.keys(designLabels) as Array<keyof DesignAnalysis>).map(key => { const field = suggestion.design?.[key]; return <div key={key}><dt><strong>{designLabels[key]}</strong></dt><dd style={{ margin: '6px 0 16px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{(typeof field === 'object' ? field?.text : field) || '暂无可靠结论'}</dd></div>; })}</dl>}
+   {!fresh && <p className="analysis-error">素材已修改，这份建议已过期。请重新分析。</p>}{fresh && !asset.analysis_suggestion_job_id && <p className="analysis-error">这份建议缺少与当前版本匹配的有效任务记录。请重新分析，或在人工审阅区独立填写。</p>}<button className="button secondary small" disabled={!canEdit || !fresh || !asset.analysis_suggestion_job_id} onClick={() => { if (!asset.analysis_suggestion_job_id) return; onApply(suggestion, asset.analysis_suggestion_job_id); setApplied(true); }}>采用建议填写</button>{applied && <p className="analysis-status" role="status">已填入人工审阅草稿，尚未完成审核。请逐项核对摘要和八项设计分析，勾选确认后再保存。</p>}</div>}
  </details>;
 }

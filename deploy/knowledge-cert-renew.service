@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew Omni knowledge feed TLS certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/omnisignal/certbot-venv/bin/certbot renew --quiet --deploy-hook "/usr/sbin/nginx -t && /bin/systemctl reload nginx"

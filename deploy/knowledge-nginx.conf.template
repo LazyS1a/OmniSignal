@@ -1,0 +1,30 @@
+# Replace PUBLIC_IP with the instance's public IPv4. Keep UI/API private.
+server {
+    listen 80 default_server;
+    server_name PUBLIC_IP;
+    server_tokens off;
+    location ^~ /.well-known/acme-challenge/ { root /var/lib/omnisignal-acme; }
+    location / { return 404; }
+}
+server {
+    listen 443 ssl default_server;
+    server_name PUBLIC_IP;
+    server_tokens off;
+    ssl_certificate /etc/letsencrypt/live/omnisignal-knowledge/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/omnisignal-knowledge/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    client_max_body_size 1k;
+    location ^~ /knowledge/v1/ {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:8503;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header Authorization $http_authorization;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 60s;
+        add_header Cache-Control "no-store" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        access_log off;
+    }
+    location / { return 404; }
+}

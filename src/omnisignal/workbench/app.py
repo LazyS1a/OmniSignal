@@ -228,7 +228,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
 
     @app.post(BASE+"/assets/{asset_id}/review")
     async def review(asset_id:str,request:Request,identity=Depends(auth.operator)):
-        return present(store.review(asset_id,await body(request),identity["actor"],identity["role"]))
+        return present(store.review(asset_id,await body(request, maximum=128000),identity["actor"],identity["role"]))
 
     @app.get(BASE+"/plans")
     def plans(identity=Depends(auth.principal)):

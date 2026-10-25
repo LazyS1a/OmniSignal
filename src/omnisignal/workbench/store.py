@@ -191,15 +191,17 @@ class Store:
         return {**asset, "created": True}
 
     def asset(self, asset_id):
+        from .review import describe_review
         with self.db() as db:
             row = db.execute("SELECT document FROM assets WHERE id=?", (asset_id,)).fetchone()
             require(row is not None, "素材不存在")
             result = json.loads(row[0])
             result["audit"] = [{**dict(r), "details": json.loads(r["details"])} for r in db.execute(
                 "SELECT actor,action,at,details FROM audit WHERE entity=? ORDER BY id DESC LIMIT 100", (asset_id,))]
-            return result
+            return describe_review(result, db)
 
     def list_assets(self, status="accepted", q="", purpose="", page=1, page_size=24):
+        from .review import describe_review
         require(status in {"accepted", "pending", "supplemental", "excluded", "all"}, "素材状态无效")
         require(purpose in {"", "brand", "conversion"}, "广告分类无效")
         where, args = [], []
@@ -215,10 +217,11 @@ class Store:
         with self.db() as db:
             total = db.execute("SELECT count(*) FROM assets" + condition, args).fetchone()[0]
             rows = db.execute("SELECT document FROM assets" + condition + " ORDER BY created_at DESC,id LIMIT ? OFFSET ?", (*args, page_size, (page-1)*page_size))
-            return {"items": [json.loads(r[0]) for r in rows], "total": total, "page": page, "page_size": page_size}
+            return {"items": [describe_review(json.loads(r[0]), db) for r in rows], "total": total, "page": page, "page_size": page_size}
 
     def review(self, asset_id, body, actor, role):
-        allowed = {"expected_revision", "status", "purposes", "reason", "kind", "title", "brand", "description", "ocr_text", "permissions", "permission_note"}
+        from .review import bind_reviewed_analysis, describe_review
+        allowed = {"expected_revision", "status", "purposes", "reason", "kind", "title", "brand", "description", "ocr_text", "permissions", "permission_note", "reviewed_analysis"}
         require(not set(body) - allowed, "包含不支持的修改字段")
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -226,7 +229,7 @@ class Store:
             require(row is not None, "素材不存在")
             item = json.loads(row[0])
             require(type(body.get("expected_revision")) is int and body["expected_revision"] == item["revision"], "素材已被修改，请刷新后重试")
-            patch = {k:v for k,v in body.items() if k != "expected_revision"}
+            patch = {k:v for k,v in body.items() if k not in {"expected_revision", "reviewed_analysis"}}
             require("permissions" not in patch or role == "admin", "用途权限需要管理员核对")
             item.update(patch)
             require(item["status"] in {"pending", "accepted", "supplemental", "excluded"}, "处理状态无效")
@@ -236,7 +239,8 @@ class Store:
                 require(isinstance(item.get(key), str) and len(item[key]) <= limit, "文字字段无效或过长")
             require(bool(item["title"].strip()) and bool(item["reason"].strip()), "请填写标题和判断依据")
             if item["status"] == "accepted":
-                require(item["kind"] == "advertisement" and bool(item["purposes"]), "收录前需确认广告类型及至少一种传播目的")
+                require(item["kind"] in {"advertisement", "reference"}, "收录前需确认是广告素材还是设计参考")
+                require(item["kind"] != "advertisement" or bool(item["purposes"]), "广告素材收录前需确认至少一种传播目的")
             if "permissions" in patch:
                 require(isinstance(item["permissions"],dict) and set(item["permissions"]) == {"display", "analysis", "export"}
                         and all(v in {"allowed", "denied", "unknown"} for v in item["permissions"].values()), "用途权限无效")
@@ -254,12 +258,19 @@ class Store:
                     require(asset_id not in active, "该素材已有签名发布版本，请先执行永久撤回，再变更状态或降低展示/导出权限")
             require(item.get("publication_status") != "withdrawn" or item["status"] != "accepted",
                     "此素材已永久撤回，原素材 ID 不得重新收录发布")
+            if "reviewed_analysis" in body:
+                image_path = self.images / item["image_file"]
+                require(image_path.parent.resolve() == self.images.resolve() and image_path.is_file()
+                        and not image_path.is_symlink() and image_path.stat().st_size <= 10 * 1024 * 1024,
+                        "审核图片路径或大小无效")
+                require(hashlib.sha256(image_path.read_bytes()).hexdigest() == item["sha256"], "图片内容已变化，请重新导入并审核")
+                item["reviewed_analysis"] = bind_reviewed_analysis(db, item, body["reviewed_analysis"], actor, item["revision"] + 1)
             item["revision"] += 1
             if item.get("analysis_suggestion_revision") != item["revision"]:
                 item["analysis_status"] = "not_analyzed"
             db.execute("UPDATE assets SET document=?,status=?,revision=? WHERE id=?", (encode(item),item["status"],item["revision"],asset_id))
-            self.audit(db, asset_id, actor, "review", {"revision":item["revision"], "status":item["status"], "purposes":item["purposes"], "reason":item["reason"], "permissions":item["permissions"], "permission_note":item["permission_note"]})
-            return item
+            self.audit(db, asset_id, actor, "review", {"revision":item["revision"], "status":item["status"], "purposes":item["purposes"], "reason":item["reason"], "permissions":item["permissions"], "permission_note":item["permission_note"], "analysis_reviewed": "reviewed_analysis" in body, "source_job_id": item.get("reviewed_analysis", {}).get("source_job_id") if "reviewed_analysis" in body else None})
+            return describe_review(item, db)
 
     def counts(self):
         with self.db() as db:
