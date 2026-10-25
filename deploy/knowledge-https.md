@@ -8,6 +8,7 @@
 - 80 端口仅允许 ACME HTTP-01 挑战，其余路径返回 404。443 端口只有知识协议路径，其他路径返回 404。
 - 知识协议在应用层校验独立只读 Bearer token；发布包与撤回清单还须通过 Ed25519 签名校验。TLS 不能替代这两项校验。
 - 私钥仅在发布端；Nova 配置只读 token 和可信公钥。禁止将私钥、凭据文件放进仓库、镜像或公开报告。
+- 私钥必须能被容器实际服务身份读取。先核对容器 UID/GID；本次服务 GID 为 101，宿主仅该文件设为 `root:101`、`0640`，父目录保留 `root:root`、`0700`，容器挂载保留 `:ro`。不能因为宿主 root 能解析就认定普通服务身份也可用，应以默认容器用户调用 `load_private_key` 验证，输出仅成功状态。
 - Nova 的 `INSPIRATION_PUBLISHER_URL` 必须带 `/knowledge/v1`，其余两项为 `INSPIRATION_READ_TOKEN` 与 `INSPIRATION_TRUSTED_KEYS_JSON`。
 
 ## IP 证书与续期
@@ -19,7 +20,7 @@
 - 证书名：`omnisignal-knowledge`。
 - nginx 使用 `/etc/letsencrypt/live/omnisignal-knowledge/` 下的证书文件。
 - 安装 `knowledge-cert-renew.service` 和 `.timer` 至 `/etc/systemd/system/`，执行 `systemctl daemon-reload`、`systemctl enable --now knowledge-cert-renew.timer`。
-- 定时器每天检查两次；续期成功后先执行 `nginx -t`，再 reload。修改规则后应运行 `certbot renew --dry-run --run-deploy-hooks`。
+- 定时器每天检查两次；续期成功后先执行 `nginx -t`，再 reload。交互验收运行 `certbot renew --dry-run --no-random-sleep-on-renew --run-deploy-hooks`，避免随机延迟超过终端会话时限。
 - 运维检查：定时器须 active，HTTPS 验证须正常，未带 token 读取应为 401，管理路径应为 404。续期失败查看 `journalctl -u knowledge-cert-renew.service`，不要用关闭证书验证作为修复。
 
 官方能力依据：[Certbot 与 IP 证书](https://letsencrypt.org/2026/03/11/shorter-certs-certbot/)、[短期和 IP 证书正式可用](https://letsencrypt.org/2026/01/15/6day-and-ip-general-availability/)。
