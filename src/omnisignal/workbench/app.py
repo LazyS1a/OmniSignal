@@ -181,6 +181,11 @@ def create_app(root=None, *, start_worker=None, frontend=None):
         return {"counts":store.counts(),"model":analysis.configuration(),
                 "sources":sources(),"budget":{"request_limit":sum(p["request_limit"] for p in plans),"used":sum(p["budget"]["used"] for p in plans),"period":"day","timezone":"UTC","actual_cost":None}}
 
+    @app.get(BASE+"/taxonomy")
+    def taxonomy(identity=Depends(auth.principal)):
+        from omnisignal.knowledge.taxonomy import TAXONOMY, TAXONOMY_VERSION
+        return {"version": TAXONOMY_VERSION, "groups": TAXONOMY}
+
     @app.get(BASE+"/assets")
     def assets(status:str="accepted",q:str=Query("",max_length=200),purpose:str="",page:int=Query(1,ge=1,le=100000),page_size:int=Query(24,ge=1,le=60),identity=Depends(auth.principal)):
         result=store.list_assets(status,q,purpose,page,page_size)

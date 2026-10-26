@@ -145,6 +145,19 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
   await modal.getByRole('combobox', { name: '内容类型', exact: true }).selectOption('reference');
   await modal.getByRole('checkbox', { name: '品牌广告', exact: true }).uncheck();
   await modal.getByRole('textbox', { name: '判断理由', exact: true }).fill('这是一张自建合成设计参考图，不是实际广告，无需广告用途。');
+  await modal.locator('summary').filter({ hasText: '发布分类' }).click();
+  await modal.getByRole('checkbox', { name: '行业：食品饮料', exact: true }).waitFor();
+  check(await modal.locator('.taxonomy-choices input:checked').count() === 0, 'legacy-asset-has-no-fabricated-default-classification');
+  await modal.getByRole('checkbox', { name: '行业：食品饮料', exact: true }).check();
+  await modal.getByRole('checkbox', { name: '媒介：包装', exact: true }).check();
+  await modal.getByRole('checkbox', { name: '设计任务：系列扩展', exact: true }).check();
+  const taxonomyConfirmation = modal.getByRole('checkbox', { name: '我已核对行业、媒介和设计任务，确认保存本次分类', exact: true });
+  check(!await taxonomyConfirmation.isChecked(), 'taxonomy-is-not-implicitly-confirmed');
+  await taxonomyConfirmation.check();
+  await modal.getByRole('textbox', { name: '分类补充说明', exact: true }).fill('自有合成包装样张，仅测试分类贯通。');
+  check(!await taxonomyConfirmation.isChecked(), 'editing-taxonomy-resets-explicit-confirmation');
+  await taxonomyConfirmation.check();
+  await page.screenshot({ path: path.join(results, '06-taxonomy-review.png'), fullPage: true });
   await modal.locator('summary').filter({ hasText: '人工审阅的设计分析' }).click();
   await modal.getByRole('textbox', { name: '审核版中文摘要', exact: true }).fill('人工审核的自有合成设计参考：绿色底色与细线矩形构成，供界面回归验证。');
   const labels = ['配色', '字体', '构图与版式', '信息层级', '视觉手法', '可借鉴的方法', '适用场景', '证据与不确定项'];
@@ -165,6 +178,7 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
   const reference = listed.items.find(item => item.title === title);
   check(reference.kind === 'reference' && reference.purposes.length === 0 && reference.status === 'accepted', 'reference-accepted-without-advertising-purpose');
   check(reference.reviewed_analysis_status === 'current' && reference.reviewed_analysis?.summary_zh?.includes('人工审核') && Object.keys(reference.reviewed_analysis.design).length === 8 && reference.reviewed_analysis.design.palette.kind === 'visual_observation' && reference.reviewed_analysis.source_job_id === null, 'manual-reviewed-analysis-persisted-with-eight-evidence-fields');
+  check(reference.reviewed_taxonomy_status === 'current' && reference.reviewed_taxonomy.revision === reference.revision && JSON.stringify(reference.reviewed_taxonomy.tags) === JSON.stringify({ industry: ['food-beverage'], medium: ['packaging'], task: ['series'] }), 'reviewed-taxonomy-persists-exact-choice-and-bound-revision');
   await page.getByRole('heading', { name: title, exact: true }).click();
   modal = page.getByRole('dialog');
   await modal.getByRole('textbox', { name: '内容说明', exact: true }).fill('普通编辑，用于验证旧人工审核版本会过期。');
@@ -172,9 +186,14 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
   await modal.waitFor({ state: 'hidden' });
   const stale = await (await context.request.get(`${base}/workbench/api/assets/${reference.id}`)).json();
   check(stale.reviewed_analysis_status === 'stale', 'ordinary-edit-invalidates-reviewed-analysis');
+  check(stale.reviewed_taxonomy_status === 'stale', 'ordinary-edit-invalidates-taxonomy');
   await page.getByRole('heading', { name: title, exact: true }).click();
   modal = page.getByRole('dialog');
   await modal.getByText('已过期 · 需要重审', { exact: true }).waitFor();
+  await modal.getByText('标签已过期', { exact: true }).waitFor();
+  await modal.locator('summary').filter({ hasText: '发布分类' }).click();
+  check(await modal.getByRole('checkbox', { name: '媒介：包装', exact: true }).isChecked(), 'saved-taxonomy-survives-reopen');
+  await modal.getByRole('checkbox', { name: '我已核对行业、媒介和设计任务，确认保存本次分类', exact: true }).check();
   await modal.locator('summary').filter({ hasText: '人工审阅的设计分析' }).click();
   check(await modal.getByRole('textbox', { name: '审核版配色', exact: true }).inputValue() === '浅绿色背景和深绿色线框是画面直接可见内容。', 'saved-analysis-survives-reopen');
   await modal.getByRole('checkbox', { name: '我已逐项核对摘要、设计分析与依据类型，确认本次保存为人工审核版', exact: true }).check();
@@ -182,6 +201,7 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
   await modal.waitFor({ state: 'hidden' });
   const reviewed = await (await context.request.get(`${base}/workbench/api/assets/${reference.id}`)).json();
   check(reviewed.reviewed_analysis_status === 'current' && reviewed.reviewed_analysis.revision === reviewed.revision, 'explicit-reconfirmation-binds-new-revision');
+  check(reviewed.reviewed_taxonomy_status === 'current' && reviewed.reviewed_taxonomy.revision === reviewed.revision, 'explicit-taxonomy-reconfirmation-binds-new-revision');
  }
 
  await page.getByRole('button', { name: '采集', exact: true }).click();
@@ -211,6 +231,11 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
   await page.getByRole('heading', { name: title, exact: true }).click();
   await page.getByRole('textbox', { name: '判断理由', exact: true }).waitFor();
   check(await page.getByRole('button', { name: '收录素材', exact: true }).count() === 0, 'viewer-cannot-review');
+  await page.getByRole('dialog').locator('summary').filter({ hasText: '发布分类' }).click();
+  check(await page.getByRole('checkbox', { name: '媒介：包装', exact: true }).isDisabled() && await page.getByRole('checkbox', { name: '我已核对行业、媒介和设计任务，确认保存本次分类', exact: true }).count() === 0, 'viewer-can-read-but-cannot-edit-taxonomy');
+  check(await page.getByRole('dialog').evaluate(dialog => dialog.scrollWidth <= dialog.clientWidth), '390px-taxonomy-dialog-no-horizontal-overflow');
+  await page.getByRole('checkbox', { name: '媒介：包装', exact: true }).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(results, '07-mobile-taxonomy.png'), fullPage: true });
   await page.getByRole('button', { name: '关闭', exact: true }).click();
  }
  check(pageErrors.length === 0, 'zero-browser-runtime-errors');

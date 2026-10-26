@@ -106,6 +106,8 @@ def fresh_review(asset):
 def describe_review(asset, db=None):
     """Add derived UI status without persisting or trusting client freshness flags."""
     result = dict(asset)
+    from .taxonomy import taxonomy_status
+    result["reviewed_taxonomy_status"] = taxonomy_status(asset)
     try:
         reviewed = fresh_review(asset)
         result["reviewed_analysis_status"] = "current" if reviewed is not None else "none"

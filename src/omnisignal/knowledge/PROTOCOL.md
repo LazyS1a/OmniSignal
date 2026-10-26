@@ -195,13 +195,28 @@ outside the published root. No key is generated automatically. Optional
 the adapter derives it from the public-key fingerprint. A consumer still needs
 that public key configured in its independent trust store.
 
-The compatible `digital` medium is only a generic digital-image category, not a
-claim about the actual placement channel. This fallback is explicitly recorded
-in `editorial.legacy_medium_fallback` and `editorial.medium_note`. The two reviewed
-purposes, `brand` and `conversion`, are stored in `editorial.marketing_purposes`.
-Original `nova-1` vocabulary is not extended. Descriptions, supplied OCR text and
-review reasons remain marked operator annotations, not model-verified claims.
-The mandatory claim records the image dimensions verified from the exact bytes.
+New workbench publications require explicit human classification from the
+unchanged `nova-1` dictionary: at least one `industry` and one `medium`, with an
+optional `task` list. The authenticated review request accepts
+`reviewed_taxonomy: {tags: {industry: [...], medium: [...], task: [...]}, note: ""}`.
+Only canonical IDs are accepted; choosing the `other` industry requires a note.
+The server binds the review to the asset ID, image SHA-256, editorial revision,
+reviewer and time. Any later editorial revision requires explicit reapproval.
+The reviewed tags are copied into `case.tags`; `editorial.taxonomy_reviewed` is
+`true` and `editorial.reviewed_taxonomy` contains that bound evidence. The
+authenticated `GET /workbench/api/taxonomy` returns `{version, groups}` for review
+clients. It neither infers tags nor changes existing records.
+
+Older assets without a classification remain readable and editable, but cannot
+be newly published until classification is reviewed. Existing signed packages
+are not rewritten: consumers may still receive `editorial.legacy_medium_fallback`
+from earlier releases. Such fallback labels are not classification facts and
+must not count toward category filters. In `nova-1`, `digital` means digital
+interface design, not every digital image. Marketing purposes `brand` and
+`conversion` remain separate in `editorial.marketing_purposes`. Descriptions,
+supplied OCR text and review reasons remain operator annotations rather than
+model-verified claims. The mandatory foundation claim records the image
+dimensions verified from the exact bytes.
 
 The return value distinguishes local `status: published` from downstream
 `receipt_status: unconfirmed`. This adapter has no network delivery, consumer

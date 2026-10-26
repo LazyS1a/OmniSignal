@@ -16,6 +16,10 @@ from omnisignal.workbench.review import DESIGN_FIELDS
 from omnisignal.workbench.store import Conflict, Store
 
 
+def taxonomy_content():
+    return {"tags": {"industry": ["food-beverage"], "medium": ["packaging"], "task": []}, "note": "合成测试包装分类"}
+
+
 def reviewed_content(job_id=None):
     return {"source_job_id": job_id, "summary_zh": "自制红色图片的人工核对设计摘要。",
             "design": {field: {"text": "人工核对内容：" + field,
@@ -42,7 +46,7 @@ def setup(tmp_path, monkeypatch):
 
 def approve_reference(store, item, analysis=True, allow_export=False):
     payload = {"expected_revision": item["revision"], "status": "accepted", "kind": "reference",
-               "purposes": [], "reason": "自制图片用于设计参考测试"}
+               "purposes": [], "reason": "自制图片用于设计参考测试", "reviewed_taxonomy": taxonomy_content()}
     if analysis:
         payload["reviewed_analysis"] = reviewed_content()
     if allow_export:
@@ -90,7 +94,7 @@ def test_all_eight_reviewed_claims_and_summary_enter_existing_signed_protocol(se
     assert "dimensions" not in {claim["claim_id"] for claim in case["claims"]}
 
 
-def test_old_manual_foundation_publication_remains_supported(setup):
+def test_manual_foundation_publication_with_reviewed_classification_remains_supported(setup):
     store, item, key = setup
     accepted = approve_reference(store, item, analysis=False, allow_export=True)
     result = export(store, accepted)
@@ -109,7 +113,7 @@ def test_any_later_review_without_explicit_reapproval_makes_analysis_unpublishab
     with pytest.raises(KnowledgeError, match="过期"):
         export(store, updated)
     assert not (store.root / "published" / "latest.json").exists()
-    reapproved = store.review(item["id"], {"expected_revision": updated["revision"], "reviewed_analysis": reviewed_content()}, "reviewer", "operator")
+    reapproved = store.review(item["id"], {"expected_revision": updated["revision"], "reviewed_analysis": reviewed_content(), "reviewed_taxonomy": taxonomy_content()}, "reviewer", "operator")
     assert reapproved["reviewed_analysis_status"] == "current"
     assert export(store, reapproved)["status"] == "published"
 
@@ -139,7 +143,7 @@ def test_completed_current_model_job_is_verified_and_model_identity_comes_from_s
     analyzed, job = completed_job(store, item)
     assert analyzed["analysis_suggestion_job_id"] == job["id"]
     accepted = store.review(item["id"], {"expected_revision": analyzed["revision"], "kind": "reference", "status": "accepted",
-                            "reviewed_analysis": reviewed_content(job["id"])}, "reviewer", "operator")
+                            "reviewed_analysis": reviewed_content(job["id"]), "reviewed_taxonomy": taxonomy_content()}, "reviewer", "operator")
     review = accepted["reviewed_analysis"]
     assert review["provenance"] == "model_assisted_human_review"
     assert review["model_version"] == FakeProvider.model_version and review["source_job_id"] == job["id"]

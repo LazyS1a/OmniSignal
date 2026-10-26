@@ -13,6 +13,7 @@ from omnisignal.knowledge.release import (
 )
 from omnisignal.knowledge.replica import KnowledgeReplica
 from omnisignal.workbench.publishing import publish_assets
+from omnisignal.workbench.taxonomy import bind_reviewed_taxonomy
 
 
 @pytest.fixture
@@ -36,6 +37,7 @@ def publication(tmp_path, monkeypatch):
         "image_path": str(image), "width": 640, "height": 480, "revision": 1,
         "sha256": digest(image.read_bytes()), "project_id": "synthetic-project",
     }
+    asset["reviewed_taxonomy"] = bind_reviewed_taxonomy(asset, {"tags": {"industry": ["food-beverage"], "medium": ["poster"], "task": ["campaign"]}, "note": "合成测试中明确给定的广告分类"}, "synthetic-reviewer", asset["revision"])
     return tmp_path / "published", asset, key
 
 
@@ -56,7 +58,9 @@ def test_signed_release_keeps_legacy_protocol_and_does_not_claim_delivery(public
     assert case["model_version"] == "none"
     assert case["editorial"]["reason"] == asset["reason"]
     assert case["editorial"]["marketing_purposes"] == ["brand", "conversion"]
-    assert case["editorial"]["legacy_medium_fallback"] is True
+    assert "legacy_medium_fallback" not in case["editorial"]
+    assert case["editorial"]["taxonomy_reviewed"] is True
+    assert case["tags"] == asset["reviewed_taxonomy"]["tags"]
     assert not any(asset["reason"] in claim["text"] for claim in case["claims"])
     assert not any(asset["description"] in claim["text"] for claim in case["claims"])
     assert case["claims"][0]["text"] == "图片尺寸为 640 × 480 像素。"
@@ -67,10 +71,12 @@ def test_signed_release_keeps_legacy_protocol_and_does_not_claim_delivery(public
 def test_multiple_assets_and_later_delta_preserve_previous_cases(publication):
     root, first, key = publication
     second = {**deepcopy(first), "id": "synthetic-2", "title": "第二张合成广告"}
+    second["reviewed_taxonomy"] = bind_reviewed_taxonomy(second, {k: first["reviewed_taxonomy"][k] for k in ("tags", "note")}, "reviewer", second["revision"])
     result = publish_assets(root, [first, second], "synthetic-operator")
     assert result["assets_count"] == 2
     second["revision"] = 2
     second["description"] = "人工补充的新说明"
+    second["reviewed_taxonomy"] = bind_reviewed_taxonomy(second, {k: first["reviewed_taxonomy"][k] for k in ("tags", "note")}, "reviewer", second["revision"])
     result2 = publish_assets(root, [second], "synthetic-operator")
     manifest, _ = verify_release(root / "releases" / result2["version"], {"synthetic-key": key.public_key()})
     assert manifest["kind"] == "delta" and manifest["parent_release_id"] == result["version"]

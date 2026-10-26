@@ -22,9 +22,9 @@ from omnisignal.knowledge.release import (
     read_latest, _history, publish_withdrawals,
 )
 from .review import DESIGN_FIELDS, fresh_review
+from .taxonomy import fresh_taxonomy
 from .store import Conflict
-
-TAXONOMY_VERSION = "nova-1"
+from omnisignal.knowledge.taxonomy import TAXONOMY_VERSION
 PURPOSES = {"brand", "conversion"}
 
 
@@ -103,15 +103,17 @@ def _prepare_asset(asset: dict, stage: Path) -> dict:
     _text(brand, "brand")
     try:
         reviewed = fresh_review(asset)
+        taxonomy = fresh_taxonomy(asset)
     except Conflict as exc:
         raise KnowledgeError(str(exc)) from None
+    _require(taxonomy is not None, "发布前请完成人工分类审核；旧素材不会自动标为其他行业或数字界面")
     case = {
         "case_id": asset_id, "revision": revision, "title": asset["title"],
         "summary_zh": ("人工审核收录的设计参考：" if material_kind == "reference" else "人工审核收录的广告素材：") + asset["title"],
         "brand_or_team": brand, "review_status": "approved",
         "display_permission": "allowed", "permissions": permission_values,
         "analysis_version": "manual-ad-review-1", "model_version": "none",
-        "tags": {"industry": ["other"], "medium": ["digital"]},
+        "tags": taxonomy["tags"],
         "sources": [{"source_id": "source-1", "url": source_url,
                      "display_permission": "allowed", "permissions": permission_values}],
         "images": [{"image_id": "image-1", "source_id": "source-1", "path": relative,
@@ -123,8 +125,7 @@ def _prepare_asset(asset: dict, stage: Path) -> dict:
         "editorial": {"provenance": "operator_supplied_not_model_verified",
                       "project_id": project_id, "material_kind": material_kind,
                       "marketing_purposes": sorted(set(purposes)),
-                      "legacy_medium_fallback": True,
-                      "medium_note": "数字图片兼容分类；实际投放媒介尚未确认。", **notes},
+                      "taxonomy_reviewed": True, "reviewed_taxonomy": taxonomy, **notes},
     }
     if reviewed is not None:
         case["summary_zh"] = reviewed["summary_zh"]

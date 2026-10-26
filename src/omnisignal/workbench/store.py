@@ -221,7 +221,8 @@ class Store:
 
     def review(self, asset_id, body, actor, role):
         from .review import bind_reviewed_analysis, describe_review
-        allowed = {"expected_revision", "status", "purposes", "reason", "kind", "title", "brand", "description", "ocr_text", "permissions", "permission_note", "reviewed_analysis"}
+        from .taxonomy import bind_reviewed_taxonomy
+        allowed = {"expected_revision", "status", "purposes", "reason", "kind", "title", "brand", "description", "ocr_text", "permissions", "permission_note", "reviewed_analysis", "reviewed_taxonomy"}
         require(not set(body) - allowed, "包含不支持的修改字段")
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -229,7 +230,7 @@ class Store:
             require(row is not None, "素材不存在")
             item = json.loads(row[0])
             require(type(body.get("expected_revision")) is int and body["expected_revision"] == item["revision"], "素材已被修改，请刷新后重试")
-            patch = {k:v for k,v in body.items() if k not in {"expected_revision", "reviewed_analysis"}}
+            patch = {k:v for k,v in body.items() if k not in {"expected_revision", "reviewed_analysis", "reviewed_taxonomy"}}
             require("permissions" not in patch or role == "admin", "用途权限需要管理员核对")
             item.update(patch)
             require(item["status"] in {"pending", "accepted", "supplemental", "excluded"}, "处理状态无效")
@@ -258,18 +259,25 @@ class Store:
                     require(asset_id not in active, "该素材已有签名发布版本，请先执行永久撤回，再变更状态或降低展示/导出权限")
             require(item.get("publication_status") != "withdrawn" or item["status"] != "accepted",
                     "此素材已永久撤回，原素材 ID 不得重新收录发布")
-            if "reviewed_analysis" in body:
+            if "reviewed_analysis" in body or "reviewed_taxonomy" in body:
                 image_path = self.images / item["image_file"]
                 require(image_path.parent.resolve() == self.images.resolve() and image_path.is_file()
                         and not image_path.is_symlink() and image_path.stat().st_size <= 10 * 1024 * 1024,
                         "审核图片路径或大小无效")
                 require(hashlib.sha256(image_path.read_bytes()).hexdigest() == item["sha256"], "图片内容已变化，请重新导入并审核")
+            if "reviewed_analysis" in body:
                 item["reviewed_analysis"] = bind_reviewed_analysis(db, item, body["reviewed_analysis"], actor, item["revision"] + 1)
+            if "reviewed_taxonomy" in body:
+                item["reviewed_taxonomy"] = bind_reviewed_taxonomy(item, body["reviewed_taxonomy"], actor, item["revision"] + 1)
             item["revision"] += 1
             if item.get("analysis_suggestion_revision") != item["revision"]:
                 item["analysis_status"] = "not_analyzed"
             db.execute("UPDATE assets SET document=?,status=?,revision=? WHERE id=?", (encode(item),item["status"],item["revision"],asset_id))
             self.audit(db, asset_id, actor, "review", {"revision":item["revision"], "status":item["status"], "purposes":item["purposes"], "reason":item["reason"], "permissions":item["permissions"], "permission_note":item["permission_note"], "analysis_reviewed": "reviewed_analysis" in body, "source_job_id": item.get("reviewed_analysis", {}).get("source_job_id") if "reviewed_analysis" in body else None})
+            if "reviewed_taxonomy" in body:
+                self.audit(db, asset_id, actor, "taxonomy_review", {"revision": item["revision"],
+                           "taxonomy_version": item["reviewed_taxonomy"]["taxonomy_version"],
+                           "tags": item["reviewed_taxonomy"]["tags"]})
             return describe_review(item, db)
 
     def counts(self):

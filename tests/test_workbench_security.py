@@ -20,6 +20,7 @@ from omnisignal.workbench.app import create_app
 from omnisignal.workbench.auth import password_hash
 from omnisignal.workbench.publishing import publish_assets, withdraw_assets
 from omnisignal.workbench.store import Store
+from omnisignal.workbench.taxonomy import bind_reviewed_taxonomy
 
 BASE = "/workbench/api"
 
@@ -53,7 +54,8 @@ def publish_sample(web):
     reviewed = web.post(BASE + f"/assets/{item['id']}/review", json={"expected_revision": item["revision"],
                         "status": "accepted", "kind": "advertisement", "purposes": ["brand"], "reason": "合成广告用途测试",
                         "permissions": {"display": "allowed", "analysis": "unknown", "export": "allowed"},
-                        "permission_note": "合成图片自有测试"})
+                        "permission_note": "合成图片自有测试",
+                        "reviewed_taxonomy": {"tags": {"industry": ["culture"], "medium": ["poster"], "task": ["campaign"]}, "note": "合成测试活动海报分类"}})
     assert reviewed.status_code == 200, reviewed.text
     published = web.post(BASE + "/publish", json={"asset_ids": [item["id"]]})
     assert published.status_code == 200, published.text
@@ -116,6 +118,8 @@ def test_signed_withdrawal_is_permanent_and_receipt_is_not_fabricated(setup):
     # Even bypassing UI state cannot republish an original globally withdrawn ID.
     forged = app.state.store.asset(item["id"])
     forged.update(status="accepted", image_path=str(app.state.store.images / forged["image_file"]))
+    forged["reviewed_taxonomy"] = bind_reviewed_taxonomy(forged,
+        {k: forged["reviewed_taxonomy"][k] for k in ("tags", "note")}, "forged-reviewer", forged["revision"])
     with pytest.raises(KnowledgeError, match="withdrawn"):
         publish_assets(directory, [forged], "admin")
 
