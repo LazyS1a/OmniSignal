@@ -94,6 +94,26 @@ def test_permissions_need_admin_and_evidence(app):
     assert administrator.post(BASE+f"/assets/{item['id']}/review",json=patch).status_code==200
 
 
+def test_assistant_review_uses_authenticated_actor_without_permission_escalation(app):
+    from omnisignal.workbench.review import DESIGN_FIELDS
+    operator=client(app,'operator')
+    item=imported(operator)
+    content={'review_method':'assistant','source_job_id':None,'summary_zh':'助手整理的自建测试样张，不是人工逐项复核。',
+        'design':{field:{'text':'合成测试说明','kind':'analysis_inference'} for field in DESIGN_FIELDS}}
+    patch={'expected_revision':1,'reviewed_analysis':content}
+    no_csrf=operator.post(BASE+f"/assets/{item['id']}/review",json=patch,headers={'X-CSRF-Token':''})
+    assert no_csrf.status_code==403
+    forged=operator.post(BASE+f"/assets/{item['id']}/review",json={**patch,'reviewed_analysis':{**content,'reviewed_by':'forged'}})
+    assert forged.status_code==409
+    response=operator.post(BASE+f"/assets/{item['id']}/review",json=patch)
+    assert response.status_code==200,response.text
+    asset=response.json()
+    assert asset['reviewed_analysis']['reviewed_by']=='operator'
+    assert asset['reviewed_analysis']['provenance']=='assistant_editorial_review'
+    assert asset['reviewed_analysis_status']=='current' and asset['revision']==2
+    assert set(asset['permissions'].values())=={'unknown'}
+
+
 def test_empty_state_and_unconfigured_is_truthful(app):
     web=client(app)
     assert web.get(BASE+'/summary').json()['counts']['assets']==0

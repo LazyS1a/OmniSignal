@@ -202,6 +202,22 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
   const reviewed = await (await context.request.get(`${base}/workbench/api/assets/${reference.id}`)).json();
   check(reviewed.reviewed_analysis_status === 'current' && reviewed.reviewed_analysis.revision === reviewed.revision, 'explicit-reconfirmation-binds-new-revision');
   check(reviewed.reviewed_taxonomy_status === 'current' && reviewed.reviewed_taxonomy.revision === reviewed.revision, 'explicit-taxonomy-reconfirmation-binds-new-revision');
+  const session = await (await context.request.get(`${base}/workbench/api/session`)).json();
+  const assistantResponse = await context.request.post(`${base}/workbench/api/assets/${reference.id}/review`, {
+   headers: { 'X-CSRF-Token': session.csrf_token }, data: { expected_revision: reviewed.revision,
+    reviewed_analysis: { source_job_id: null, review_method: 'assistant', summary_zh: '助手整理的合成测试样图；未经人工逐项复核。', design: reviewed.reviewed_analysis.design },
+    reviewed_taxonomy: { tags: reviewed.reviewed_taxonomy.tags, note: '助手分类，用于合成测试。' } }
+  });
+  check(assistantResponse.ok(), 'assistant-review-accepted-by-real-authenticated-api');
+  const assistant = await assistantResponse.json();
+  check(assistant.reviewed_analysis.provenance === 'assistant_editorial_review' && assistant.reviewed_analysis.model_version === 'none', 'assistant-provenance-is-not-human-or-model-job');
+  await page.getByRole('heading', { name: title, exact: true }).click();
+  modal = page.getByRole('dialog');
+  await modal.locator('summary').filter({ hasText: '助手整理的设计分析' }).click();
+  check(await modal.getByText('已整理 · 当前版本', { exact: true }).isVisible() && await modal.getByText(/AI 助手整理，未经人工逐项复核/).isVisible(), 'assistant-origin-visible-without-human-review-claim');
+  check(!await modal.getByRole('checkbox', { name: '我已逐项核对摘要、设计分析与依据类型，确认本次保存为人工审核版', exact: true }).isChecked(), 'assistant-content-is-not-implicitly-human-confirmed');
+  await page.screenshot({ path: path.join(results, '08-assistant-provenance.png'), fullPage: true });
+  await modal.getByRole('button', { name: '关闭', exact: true }).click();
  }
 
  await page.getByRole('button', { name: '采集', exact: true }).click();

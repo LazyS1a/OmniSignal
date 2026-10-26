@@ -234,3 +234,51 @@ def test_advertisement_still_requires_existing_advertising_purpose(setup):
         store.review(item["id"], {"expected_revision": 1, "kind": "advertisement", "status": "accepted", "purposes": []}, "reviewer", "operator")
     accepted = store.review(item["id"], {"expected_revision": 1, "kind": "advertisement", "status": "accepted", "purposes": ["brand", "conversion"]}, "reviewer", "operator")
     assert accepted["purposes"] == ["brand", "conversion"]
+
+
+def test_assistant_editorial_review_is_explicit_bound_and_honestly_published(setup):
+    store, item, key = setup
+    content = {**reviewed_content(), "review_method": "assistant", "summary_zh": "助手整理的虚构概念样张；未经人工逐项复核。"}
+    accepted = store.review(item["id"], {"expected_revision": item["revision"], "status": "accepted", "kind": "reference",
+        "purposes": [], "reviewed_analysis": content, "reviewed_taxonomy": taxonomy_content()}, "delegated-assistant", "operator")
+    review = accepted["reviewed_analysis"]
+    assert accepted["reviewed_analysis_status"] == "current"
+    assert (review["provenance"], review["model_version"], review["source_job_id"]) == ("assistant_editorial_review", "none", None)
+    assert review["reviewed_by"] == "delegated-assistant" and review["revision"] == accepted["revision"] == 2
+    assert review["sha256"] == item["sha256"] and "review_method" not in review
+    assert set(accepted["permissions"].values()) == {"unknown"}
+    with pytest.raises(KnowledgeError, match="display and export"):
+        export(store, accepted)
+    payload = {"expected_revision": accepted["revision"], "permissions": {"display": "allowed", "analysis": "allowed", "export": "allowed"},
+        "permission_note": "自建测试样张授权", "reviewed_analysis": content, "reviewed_taxonomy": taxonomy_content()}
+    with pytest.raises(Conflict):
+        store.review(item["id"], payload, "delegated-assistant", "operator")
+    accepted = store.review(item["id"], payload, "authenticated-admin", "admin")
+    result = export(store, accepted)
+    _, records = verify_release(store.root / "published" / "releases" / result["version"], {"synthetic-key": key.public_key()})
+    case = records[0]["case"]
+    assert case["analysis_version"] == "assistant-design-review-1" and case["model_version"] == "none"
+    assert case["editorial"]["provenance"] == "assistant_editorial_review"
+    assert case["summary_zh"] == content["summary_zh"] and len(case["claims"]) == 8
+    stale = store.review(item["id"], {"expected_revision": accepted["revision"], "reason": "普通编辑"}, "operator", "operator")
+    assert stale["reviewed_analysis_status"] == "stale"
+    with pytest.raises(KnowledgeError, match="过期"):
+        export(store, stale)
+
+
+def test_assistant_cannot_claim_a_completed_model_job_as_human_review(setup):
+    store, item, _ = setup
+    analyzed, job = completed_job(store, item)
+    with pytest.raises(Conflict, match="助手整理"):
+        store.review(item["id"], {"expected_revision": analyzed["revision"],
+            "reviewed_analysis": {**reviewed_content(job["id"]), "review_method": "assistant"}}, "assistant", "operator")
+    assert store.asset(item["id"])["revision"] == analyzed["revision"]
+
+
+@pytest.mark.parametrize("method", ["model", "manual_human_review", "", None, [], {}])
+def test_review_method_rejects_ambiguous_values(setup, method):
+    store, item, _ = setup
+    with pytest.raises(Conflict, match="整理方式"):
+        store.review(item["id"], {"expected_revision": 1,
+            "reviewed_analysis": {**reviewed_content(), "review_method": method}}, "assistant", "operator")
+    assert store.asset(item["id"])["revision"] == 1

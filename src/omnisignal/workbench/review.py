@@ -24,7 +24,7 @@ BOUND_FIELDS = {"schema_version", "asset_id", "revision", "sha256", "reviewed_by
 
 def validated_content(payload):
     require(isinstance(payload, dict) and {"summary_zh", "design"} <= set(payload)
-            <= {"source_job_id", "summary_zh", "design"}, "审核分析字段无效；身份、版本与模型来源由服务端绑定")
+            <= {"source_job_id", "summary_zh", "design", "review_method"}, "审核分析字段无效；身份、版本与模型来源由服务端绑定")
     summary = payload["summary_zh"]
     require(isinstance(summary, str) and 0 < len(summary.strip()) <= 6000
             and re.search(r"[\u3400-\u9fff]", summary) is not None, "请填写不超过 6000 字的中文审核摘要")
@@ -41,7 +41,10 @@ def validated_content(payload):
     require(any(value["text"] for value in result.values()), "请至少填写一项已核对的设计分析")
     job_id = payload.get("source_job_id")
     require(job_id is None or (isinstance(job_id, str) and 0 < len(job_id) <= 128), "分析任务来源无效")
-    return {"source_job_id": job_id, "summary_zh": summary.strip(), "design": result}
+    method = payload.get("review_method", "human")
+    require(isinstance(method, str) and method in {"human", "assistant"}, "整理方式只能选择 human 或 assistant")
+    require(method != "assistant" or job_id is None, "助手整理不能借用模型任务声称人工复核")
+    return {"source_job_id": job_id, "review_method": method, "summary_zh": summary.strip(), "design": result}
 
 
 def completed_source_job(db, asset, job_id):
@@ -72,8 +75,10 @@ def completed_source_job(db, asset, job_id):
 def bind_reviewed_analysis(db, asset, payload, actor, new_revision):
     """Call inside the same BEGIN IMMEDIATE transaction as the review CAS."""
     content = validated_content(payload)
+    method = content.pop("review_method")
     require(isinstance(actor, str) and 0 < len(actor.strip()) <= 1000, "缺少已认证的审核人")
-    model, provenance = "none", "manual_human_review"
+    model = "none"
+    provenance = "assistant_editorial_review" if method == "assistant" else "manual_human_review"
     if content["source_job_id"] is not None:
         job = completed_source_job(db, asset, content["source_job_id"])
         require(job is not None, "分析任务必须属于当前素材、当前版本和图片，且已真实完成；请重新分析或改为独立人工审核")
@@ -96,7 +101,7 @@ def fresh_review(asset):
     require(isinstance(review["reviewed_by"], str) and bool(review["reviewed_by"].strip())
             and isinstance(review["reviewed_at"], str) and bool(review["reviewed_at"]), "审核来源信息不完整")
     if review["source_job_id"] is None:
-        require(review["model_version"] == "none" and review["provenance"] == "manual_human_review", "人工分析不能伪称模型来源")
+        require(review["model_version"] == "none" and review["provenance"] in {"manual_human_review", "assistant_editorial_review"}, "独立整理不能伪称模型任务来源")
     else:
         require(isinstance(review["model_version"], str) and 0 < len(review["model_version"]) <= 200
                 and review["model_version"] != "none" and review["provenance"] == "model_assisted_human_review", "模型辅助审核来源无效")

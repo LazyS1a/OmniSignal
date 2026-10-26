@@ -130,7 +130,8 @@ def _prepare_asset(asset: dict, stage: Path) -> dict:
     if reviewed is not None:
         case["summary_zh"] = reviewed["summary_zh"]
         case["model_version"] = reviewed["model_version"]
-        case["analysis_version"] = "human-design-review-1"
+        case["analysis_version"] = ("assistant-design-review-1" if reviewed["provenance"] == "assistant_editorial_review"
+                                    else "human-design-review-1")
         case["claims"] = [
             {"claim_id": "design-" + field, "kind": reviewed["design"][field]["kind"],
              "text": reviewed["design"][field]["text"], "design_field": field,
