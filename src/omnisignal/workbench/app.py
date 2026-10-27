@@ -243,6 +243,42 @@ def create_app(root=None, *, start_worker=None, frontend=None):
     def analysis_config(identity=Depends(auth.principal)):
         return analysis.configuration()
 
+    @app.post(BASE+"/analysis/batches/preview")
+    async def preview_analysis_batch(request:Request,identity=Depends(auth.operator)):
+        data=await body(request)
+        if set(data)!={"items"}:
+            raise HTTPException(422,"批量预检参数无效")
+        try:
+            items=analysis.batch_items(data["items"])
+        except Conflict as exc:
+            raise HTTPException(422,str(exc)) from None
+        return analysis.preview_batch(items)
+
+    @app.post(BASE+"/analysis/batches",status_code=202)
+    async def create_analysis_batch(request:Request,identity=Depends(auth.operator)):
+        data=await body(request)
+        if set(data)!={"items","request_id"}:
+            raise HTTPException(422,"批量分析参数无效")
+        try:
+            items=analysis.batch_items(data["items"])
+            analysis.batch_id(data["request_id"])
+        except Conflict as exc:
+            raise HTTPException(422,str(exc)) from None
+        if not app.state.collector:
+            raise HTTPException(409,"任务执行器未启动，请联系管理员")
+        return analysis.enqueue_batch(data["request_id"],items,identity["actor"])
+
+    @app.get(BASE+"/analysis/batches/{batch_id}")
+    def analysis_batch(batch_id:str,identity=Depends(auth.operator)):
+        try:
+            analysis.batch_id(batch_id)
+        except Conflict as exc:
+            raise HTTPException(422,str(exc)) from None
+        result=analysis.batch(batch_id,identity["actor"])
+        if result is None:
+            raise HTTPException(404,"未找到此账号的分析批次")
+        return result
+
     @app.get(BASE+"/assets/{asset_id}/analysis")
     def analysis_jobs(asset_id:str,identity=Depends(auth.principal)):
         store.asset(asset_id)

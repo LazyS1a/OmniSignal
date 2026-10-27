@@ -168,10 +168,12 @@ def test_daily_limit_is_reserved_atomically_for_queued_jobs(prepared, monkeypatc
     other = store.import_asset({"title": "其他合成图片", "source_url": "https://example.invalid/other"}, other_bytes.getvalue())
     other = store.review(other["id"], {"expected_revision": 1, "permissions": asset["permissions"], "permission_note": "合成"}, "admin", "admin")
     service.enqueue(asset["id"], asset["revision"], "admin")
-    service.enqueue(other["id"], other["revision"], "admin")
+    with pytest.raises(Conflict, match="已分配"):
+        service.enqueue(other["id"], other["revision"], "admin")
+    assert service.configuration()["reserved"] == 1
+    assert service.configuration()["remaining"] == 0
     assert service.run_pending()["status"] == "completed"
-    failed = service.run_pending()
-    assert failed["status"] == "failed" and failed["charged"] is False
+    assert service.run_pending() is None
     assert provider.calls == 1
     assert service.configuration()["status"] == "budget_exhausted"
 
