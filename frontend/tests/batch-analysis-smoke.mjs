@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 
 const frontend = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repository = path.resolve(frontend, '..');
-const results = path.join(frontend, 'test-results', 'batch-analysis');
+const unlimited = process.env.SMOKE_ANALYSIS_UNLIMITED === 'true';
+const results = path.join(frontend, 'test-results', unlimited ? 'batch-analysis-unlimited' : 'batch-analysis');
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'omni-batch-ui-'));
 const password = crypto.randomBytes(24).toString('base64url');
 const viewerPassword = crypto.randomBytes(24).toString('base64url');
@@ -72,7 +73,7 @@ try {
  await fs.mkdir(results, { recursive: true });
  const port = await unusedPort(), base = `http://127.0.0.1:${port}`;
  server = spawn(process.env.SMOKE_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'), ['-c', code], {
-  cwd: repository, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, PYTHONPATH: path.join(repository, 'src'), SMOKE_ROOT: temporary, SMOKE_FRONTEND: path.join(frontend, 'dist'), SMOKE_PORT: String(port), SMOKE_PASSWORD: password, SMOKE_VIEWER_PASSWORD: viewerPassword, OMNISIGNAL_WORKBENCH_USERS_FILE: path.join(temporary, 'users.json'), OMNISIGNAL_WORKBENCH_ANALYSIS_BACKEND: 'direct', OMNISIGNAL_WORKBENCH_MODEL_API_KEY: '', OMNISIGNAL_WORKBENCH_MODEL: '', OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT: '5', OMNISIGNAL_WORKBENCH_SECURE_COOKIE: 'false', OMNISIGNAL_KNOWLEDGE_SIGNING_KEY_FILE: '', OMNISIGNAL_PREPARATION_DIR: '', OMNISIGNAL_WORKBENCH_WORKER: 'true' }
+  cwd: repository, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, PYTHONPATH: path.join(repository, 'src'), SMOKE_ROOT: temporary, SMOKE_FRONTEND: path.join(frontend, 'dist'), SMOKE_PORT: String(port), SMOKE_PASSWORD: password, SMOKE_VIEWER_PASSWORD: viewerPassword, OMNISIGNAL_WORKBENCH_USERS_FILE: path.join(temporary, 'users.json'), OMNISIGNAL_WORKBENCH_ANALYSIS_BACKEND: 'direct', OMNISIGNAL_WORKBENCH_MODEL_API_KEY: '', OMNISIGNAL_WORKBENCH_MODEL: '', OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT: unlimited ? 'unlimited' : '5', OMNISIGNAL_WORKBENCH_SECURE_COOKIE: 'false', OMNISIGNAL_KNOWLEDGE_SIGNING_KEY_FILE: '', OMNISIGNAL_PREPARATION_DIR: '', OMNISIGNAL_WORKBENCH_WORKER: 'true' }
  });
  server.stderr.on('data', () => {});
  await ready(base);
@@ -102,10 +103,14 @@ try {
  let response = page.waitForResponse(r => new URL(r.url()).pathname === previewPath);
  await page.getByRole('button', { name: '批量分析', exact: true }).click();
  let preview = await (await response).json();
- check(preview.totals.eligible === 4 && preview.totals.skipped === 4, 'server-preview-quota-and-skip-counts');
- check(preview.items.some(item => item.reason_code === 'budget_exhausted'), 'quota-skip-reason-visible');
+ check(preview.totals.eligible === (unlimited ? 5 : 4) && preview.totals.skipped === (unlimited ? 3 : 4), 'server-preview-quota-and-skip-counts');
+ if (unlimited) {
+  check(preview.quota.limit === null && preview.quota.remaining === null && preview.quota.unlimited === true, 'unlimited-quota-is-explicit-null');
+  await page.getByText(/无每日次数上限 · 今日已调用 1 次/).waitFor();
+  check(!preview.items.some(item => item.reason_code === 'budget_exhausted') && !await page.getByText(/今日限额 0 次|剩余 null|今日限额 null/).count(), 'unlimited-preview-text-and-no-quota-skips');
+ } else check(preview.items.some(item => item.reason_code === 'budget_exhausted'), 'quota-skip-reason-visible');
  check(await fakeCalls() === 1 && submissions.length === 0, 'preview-does-not-call-model-or-submit-batch');
- await page.getByRole('button', { name: '开始批量分析（4 张）', exact: true }).waitFor();
+ await page.getByRole('button', { name: `开始批量分析（${unlimited ? 5 : 4} 张）`, exact: true }).waitFor();
  await page.screenshot({ path: path.join(results, '01-preview-desktop.png'), fullPage: true });
  await page.setViewportSize({ width: 390, height: 844 });
  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile-preview-no-horizontal-overflow');
@@ -161,6 +166,10 @@ try {
  await page.getByRole('dialog').waitFor();
  await page.getByRole('dialog').locator('summary').filter({ hasText: '分析建议' }).click();
  await page.getByText('本次模型：synthetic-only', { exact: true }).waitFor();
+ if (unlimited) {
+  await page.getByRole('dialog').getByText(/无每日次数上限 · 今日已调用 3 次/).waitFor();
+  check(await page.getByRole('dialog').getByText(/无每日次数上限/).count() === 1, 'single-analysis-unlimited-usage-label');
+ }
  check(await page.getByRole('dialog').getByRole('button', { name: '收录素材', exact: true }).count() === 1, 'analysis-results-remain-pending-review');
  await page.getByRole('button', { name: '关闭', exact: true }).click();
 

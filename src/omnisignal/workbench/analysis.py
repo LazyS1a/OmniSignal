@@ -154,8 +154,11 @@ class AnalysisService:
             pass
 
     def _limit(self):
+        raw = os.getenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", "0").strip()
+        if raw.lower() == "unlimited":
+            return None
         try:
-            value = int(os.getenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", "0"))
+            value = int(raw)
             return value if 0 <= value <= 10000 else 0
         except ValueError:
             return 0
@@ -178,7 +181,7 @@ class AnalysisService:
             reason = "Nova 连接已配置；提交时核验实际模型与服务状态"
         return {"configured": self.provider is not None, "status": status, "reason": reason,
                 "request_limit": limit, "used": used, "reserved": quota["reserved"],
-                "remaining": quota["remaining"],
+                "remaining": quota["remaining"], "unlimited": limit is None,
                 "backend": "nova" if getattr(self.provider, "is_nova", False) else "direct",
                 "model": getattr(self.provider, "model_version", None), "remote": remote}
 
@@ -193,8 +196,9 @@ class AnalysisService:
         reserved = db.execute("SELECT count(*) FROM analysis_jobs WHERE charged=0 AND status IN ('queued','running','waiting_remote')").fetchone()[0]
         queued = db.execute("SELECT count(*) FROM analysis_jobs WHERE status='queued'").fetchone()[0]
         limit = self._limit()
-        return {"limit": limit, "used": used, "reserved": reserved,
-                "remaining": max(0, limit - used - reserved), "queue_remaining": max(0, 100 - queued)}
+        return {"limit": limit, "used": used, "reserved": reserved, "unlimited": limit is None,
+                "remaining": None if limit is None else max(0, limit - used - reserved),
+                "queue_remaining": max(0, 100 - queued)}
 
     @staticmethod
     def batch_items(items):
@@ -250,14 +254,15 @@ class AnalysisService:
                     code, reason = "not_configured", "分析接口尚未配置"
                 elif self._limit() == 0:
                     code, reason = "disabled", "每日请求额度为 0，分析未启用"
-                elif remaining <= 0:
+                elif remaining is not None and remaining <= 0:
                     code, reason = "budget_exhausted", "今日剩余额度已用完或已分配，暂不入队"
                 elif queue_remaining <= 0:
                     code, reason = "queue_full", "分析队列已满，暂不入队"
                 else:
                     item["disposition"] = "eligible"
                     code, reason = "eligible", "可以分析；结果仍需人工复核"
-                    remaining -= 1
+                    if remaining is not None:
+                        remaining -= 1
                     queue_remaining -= 1
             item.update(reason_code=code, reason=reason)
             results.append(item)
@@ -387,8 +392,8 @@ class AnalysisService:
                     "已有分析结果；重新分析可能再次计费，请明确选择重新分析" if previous and previous["status"] == "completed"
                     else "上次任务未完成；重试可能再次计费，请明确选择重试")
             quota = self._quota(db)
-            require(quota["limit"] > 0, "每日请求额度为 0，付费分析未启用")
-            require(quota["remaining"] > 0, "今日模型请求额度已用完或已分配给排队任务")
+            require(quota["limit"] is None or quota["limit"] > 0, "每日请求额度为 0，付费分析未启用")
+            require(quota["remaining"] is None or quota["remaining"] > 0, "今日模型请求额度已用完或已分配给排队任务")
             require(quota["queue_remaining"] > 0, "待分析队列已满，请稍后再试")
             job_id = uuid.uuid4().hex
             db.execute("INSERT INTO analysis_jobs(id,asset_id,revision,cache_key,provider,actor,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
@@ -475,7 +480,10 @@ class AnalysisService:
                     return self._job(db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job["id"],)).fetchone())
                 limit, day = self._limit(), self.store.day()
                 db.execute("INSERT OR IGNORE INTO analysis_usage(day,used) VALUES(?,0)", (day,))
-                reserved = db.execute("UPDATE analysis_usage SET used=used+1 WHERE day=? AND used<?", (day, limit)).rowcount
+                # Unlimited admission still increments the durable usage ledger.
+                # None is an explicit mode, not a large replacement cap.
+                reserved = (db.execute("UPDATE analysis_usage SET used=used+1 WHERE day=?", (day,)).rowcount
+                            if limit is None else db.execute("UPDATE analysis_usage SET used=used+1 WHERE day=? AND used<?", (day, limit)).rowcount)
                 if not reserved:
                     self._finish(db, job, "failed", "今日模型请求额度已用完；未调用模型")
                     return self._job(db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job["id"],)).fetchone())

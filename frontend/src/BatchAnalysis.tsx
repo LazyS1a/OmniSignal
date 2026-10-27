@@ -7,7 +7,7 @@ type Batch = {
  batch_id: string | null; request_id: string | null; state: 'preview' | 'running' | 'finished'; created_at: string | null;
  items: BatchItem[];
  totals: { requested: number; eligible: number; submitted: number; skipped: number; queued: number; running: number; completed: number; failed: number };
- quota: { limit: number; used: number; reserved: number; remaining: number; queue_remaining: number };
+ quota: { limit: number | null; used: number; reserved: number; remaining: number | null; queue_remaining: number; unlimited?: boolean };
  provider: { configured: boolean; backend: string; model: string | null };
 };
 type Submission = { request_id: string; items: BatchInput[] };
@@ -122,8 +122,8 @@ export default function BatchAnalysis({ actor, assets, loading, selected, onSele
     <div className="batch-counts" aria-live="polite">
      {preview ? <><span><strong>{result.totals.eligible}</strong> 可排队</span><span><strong>{result.totals.skipped}</strong> 将跳过</span></> : <><span><strong>{result.totals.completed}</strong> 已完成</span><span><strong>{result.totals.queued + result.totals.running}</strong> 处理中</span><span><strong>{result.totals.failed}</strong> 未完成</span><span><strong>{result.totals.skipped}</strong> 已跳过</span></>}
     </div>
-    {preview ? <p className="batch-hint">今日限额 {result.quota.limit} 次 · 已用 {result.quota.used} · 已排队预留 {result.quota.reserved} · 本次检查时剩余 {result.quota.remaining} 次。按 UTC 日重置，每张最多提交一次请求，失败也可能计入额度。提交时会再次核验。</p> : <p className="batch-hint">这一批提交了 {result.totals.submitted} 张。关闭页面不会取消任务；完成后打开图片详情查看分析建议。失败项可在详情中确认后重试。</p>}
-    <p className="batch-hint">{result.provider.backend === 'nova' ? '沿用 Nova 后台当前模型，具体型号以分析结果为准。' : result.provider.model ? `分析模型：${result.provider.model}` : '模型尚未就绪。'}{preview && ' 批量分析不会改变图片用途权限或自动收录、发布。'}</p>
+    {preview ? <p className="batch-hint">{result.quota.limit === null ? <>无每日次数上限 · 今日已调用 {result.quota.used} 次 · 待调用 {result.quota.reserved} 项。按 UTC 日统计，每批最多 100 张，队列最多 100 项。</> : <>今日限额 {result.quota.limit} 次 · 已用 {result.quota.used} · 已排队预留 {result.quota.reserved} · 本次检查时剩余 {result.quota.remaining} 次。按 UTC 日重置。</>} 每张最多提交一次请求，失败也可能计入用量。提交时会再次核验。</p> : <p className="batch-hint">这一批提交了 {result.totals.submitted} 张。关闭页面不会取消任务；完成后打开图片详情查看分析建议。失败项可在详情中确认后重试。</p>}
+    <p className="batch-hint">{result.provider.backend === 'nova' ? '通过 Nova 的视觉分析服务，具体型号以分析结果为准。' : result.provider.model ? `分析模型：${result.provider.model}` : '模型尚未就绪。'}{preview && ' 批量分析不会改变图片用途权限或自动收录、发布。'}</p>
     <ul className="batch-items">{result.items.map(item => <li key={item.asset_id}>
      <div className="batch-item-main"><button className="text-button batch-item-title" onClick={() => viewAsset(item.asset_id)}>{item.title || '素材暂不可用'}</button><span className={`batch-state ${item.disposition === 'skipped' ? 'skipped' : item.status === 'completed' ? 'complete' : ''}`}>{item.disposition === 'eligible' ? '可排队' : item.disposition === 'skipped' ? '跳过' : jobLabels[item.status || ''] || '等待更新'}</span></div>
      {item.reason && <p className="muted">{item.reason}</p>}

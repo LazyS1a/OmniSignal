@@ -231,6 +231,76 @@ def test_queue_capacity_is_separate_from_daily_limit(prepared, monkeypatch):
     assert preview["items"][0]["reason_code"] == "queue_full"
 
 
+@pytest.mark.parametrize("value", ["unlimited", " UNLIMITED "])
+def test_unlimited_is_explicit_and_has_no_replacement_daily_cap(prepared, monkeypatch, value):
+    store, service, provider = prepared
+    monkeypatch.setenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", value)
+    with store.db() as db:
+        db.execute("INSERT INTO analysis_usage VALUES(?,20000)", (store.day(),))
+    assets = [add_asset(store, number) for number in range(6)]
+    config = service.configuration()
+    assert config["status"] == "ready" and config["request_limit"] is None
+    assert config["remaining"] is None and config["unlimited"] is True and config["used"] == 20000
+    preview = service.preview_batch(selected(*assets[:5]))
+    assert preview["totals"]["eligible"] == 5
+    assert preview["quota"]["limit"] is None and preview["quota"]["remaining"] is None
+    assert preview["quota"]["unlimited"] is True
+    batch = service.enqueue_batch(str(uuid.uuid4()), selected(*assets[:5]), "admin")
+    service.enqueue(assets[5]["id"], assets[5]["revision"], "admin")
+    assert service.configuration()["reserved"] == 6
+    while service.run_pending():
+        pass
+    done = service.batch(batch["batch_id"], "admin")
+    assert done["totals"]["completed"] == 5 and provider.calls == 6
+    assert done["quota"]["used"] == 20006 and done["quota"]["reserved"] == 0
+    assert done["quota"]["remaining"] is None and service.configuration()["status"] == "ready"
+
+
+@pytest.mark.parametrize("value", [None, "0", "", "nonsense", "-1", "10001", "999999999", "None", "infinity"])
+def test_missing_zero_or_invalid_limit_never_enables_unlimited(prepared, monkeypatch, value):
+    store, service, provider = prepared
+    if value is None:
+        monkeypatch.delenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", raising=False)
+    else:
+        monkeypatch.setenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", value)
+    asset = add_asset(store, 1)
+    config = service.configuration()
+    assert config["status"] == "disabled" and config["request_limit"] == 0
+    assert config["remaining"] == 0 and config["unlimited"] is False
+    assert service.preview_batch(selected(asset))["items"][0]["reason_code"] == "disabled"
+    with pytest.raises(Conflict, match="额度为 0"):
+        service.enqueue(asset["id"], asset["revision"], "admin")
+    assert provider.calls == 0
+
+
+def test_unlimited_preserves_queue_cap_and_permission_checks(prepared, monkeypatch):
+    store, service, _ = prepared
+    monkeypatch.setenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", "unlimited")
+    asset, unknown = add_asset(store, 1), add_asset(store, 2, "unknown")
+    with store.db() as db:
+        for index in range(100):
+            db.execute("INSERT INTO analysis_jobs(id,asset_id,revision,cache_key,provider,actor,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                       (str(index), "historical-asset", 1, str(index), "test", "admin", "queued", "2026-01-01T00:00:00+00:00"))
+    preview = service.preview_batch(selected(asset, unknown))
+    assert preview["quota"]["remaining"] is None and preview["quota"]["queue_remaining"] == 0
+    assert [item["reason_code"] for item in preview["items"]] == ["queue_full", "permission_required"]
+    with pytest.raises(Conflict, match="队列已满"):
+        service.enqueue(asset["id"], asset["revision"], "admin")
+    with pytest.raises(Conflict, match="1 至 100"):
+        service.preview_batch([{"asset_id": str(number), "expected_revision": 1} for number in range(101)])
+
+
+def test_disabling_after_unlimited_enqueue_prevents_new_provider_calls(prepared, monkeypatch):
+    store, service, provider = prepared
+    monkeypatch.setenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", "unlimited")
+    asset = add_asset(store, 1)
+    service.enqueue_batch(str(uuid.uuid4()), selected(asset), "admin")
+    monkeypatch.setenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", "0")
+    result = service.run_pending()
+    assert result["status"] == "failed" and result["charged"] is False
+    assert service.configuration()["used"] == 0 and provider.calls == 0
+
+
 def test_utc_day_rollover_reserves_old_queued_but_not_charged_remote_reconciliation(prepared, monkeypatch):
     store, service, _ = prepared
     monkeypatch.setenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", "2")
