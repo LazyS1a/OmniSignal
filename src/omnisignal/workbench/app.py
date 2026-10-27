@@ -82,6 +82,8 @@ def create_app(root=None, *, start_worker=None, frontend=None):
     store=Store(root or os.getenv("OMNISIGNAL_WORKBENCH_DIR","data/ad-workbench"))
     from .analysis import AnalysisService
     analysis=AnalysisService(store)
+    from .daily_pilot import DailyPilot
+    pilot=DailyPilot(store,analysis,policy_path=os.getenv("OMNISIGNAL_WORKBENCH_DAILY_PILOT_CONFIG"))
     enabled=start_worker if start_worker is not None else os.getenv("OMNISIGNAL_WORKBENCH_WORKER","false")=="true"
 
     @asynccontextmanager
@@ -99,11 +101,13 @@ def create_app(root=None, *, start_worker=None, frontend=None):
             worker=WorkbenchCollector(store)
             worker.start()
             analysis.start()
+            pilot.start()
             app.state.collector=worker
         try:
             yield
         finally:
             if enabled:
+                pilot.stop()
                 analysis.stop()
             if worker:
                 worker.stop()
@@ -113,6 +117,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
     app=FastAPI(title="Omni Ad Workbench",lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
     app.state.store=store
     app.state.collector=None
+    app.state.daily_pilot=pilot
     from .feed import router as feed_router
     app.include_router(feed_router(Path(os.getenv("OMNISIGNAL_KNOWLEDGE_DIR",str(store.root/"published")))))
 
@@ -242,6 +247,10 @@ def create_app(root=None, *, start_worker=None, frontend=None):
     @app.get(BASE+"/analysis/config")
     def analysis_config(identity=Depends(auth.principal)):
         return analysis.configuration()
+
+    @app.get(BASE+"/analysis/daily-pilot")
+    def daily_pilot(identity=Depends(auth.principal)):
+        return {**pilot.snapshot(),"worker_enabled":bool(app.state.collector)}
 
     @app.post(BASE+"/analysis/batches/preview")
     async def preview_analysis_batch(request:Request,identity=Depends(auth.operator)):

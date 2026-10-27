@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import os
 import queue
 import socket
 import threading
@@ -232,13 +233,16 @@ class WorkbenchCollector:
                 raise FetchError("listing_structure_changed")
             known = set(self.store.known_project_ids(site))
             seen, attempts = set(), 0
+            raw_project_limit = os.getenv("OMNISIGNAL_WORKBENCH_COLLECTION_PROJECT_LIMIT", "2")
+            project_limit = int(raw_project_limit) if raw_project_limit in {str(n) for n in range(1, 11)} else 2
+            attempt_limit = max(6, project_limit * 3)
             # Listing order wins. Never prepend the old demo seed to live discovery.
             for url in urls:
                 identity = project_id(site, url)
                 if identity in known or identity in seen:
                     continue
                 seen.add(identity)
-                if attempts >= 2:
+                if projects >= project_limit or attempts >= attempt_limit:
                     break
                 attempts += 1
                 try:
