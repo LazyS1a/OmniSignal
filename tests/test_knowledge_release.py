@@ -45,6 +45,11 @@ def test_full_release_roundtrip_and_canonical_signature(setup):
     assert read_latest(base["root"])["sequence"] == 1
     assert materialize_release(base["root"]) == {case["case_id"]: case}
     assert manifest["created_at"].endswith("Z")
+    # Nova's Zod datetime() accepts at most three fractional digits; the stamp must
+    # stay millisecond-precision even though Python's isoformat() defaults to six.
+    stamp = manifest["created_at"]
+    fractional = stamp.split(".", 1)[1].rstrip("Z") if "." in stamp else ""
+    assert 1 <= len(fractional) <= 3, stamp
     assert b" " not in canonical({"b": 2, "a": 1})
 
 

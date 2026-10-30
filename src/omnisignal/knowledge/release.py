@@ -37,6 +37,17 @@ class KnowledgeError(ValueError):
     """A package is invalid or conflicts with previously published state."""
 
 
+def utc_stamp() -> str:
+    """UTC ISO-8601 with exactly three fractional digits.
+
+    Nova's Zod `datetime()` accepts only millisecond precision; Python's
+    `isoformat()` emits six microsecond digits, which its verifier rejects
+    before the signature is even checked. Keep both sides byte-compatible.
+    """
+    now = datetime.now(timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
 def canonical(value: object) -> bytes:
     # This deliberately narrow JSON profile matches the Nova JavaScript verifier.
     # Floats (including 1.0) and unsafe integers cannot preserve signed bytes in JS.
@@ -511,7 +522,7 @@ def publish_release(*, root: Path | str, release_id: str, sequence: int, records
                     previous_hashes = historical[1]
                     current_hashes = {name: file_hashes[name] for name in _record(record)}
                     _require(current_hashes == previous_hashes, "case image evidence changed; increase revision")
-            payload = {"schema_version": 1, "release_id": release_id, "sequence": sequence, "kind": kind, "parent_release_id": parent_release_id, "created_at": created_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "taxonomy_version": taxonomy_version, "records_count": len(records), "files": files}
+            payload = {"schema_version": 1, "release_id": release_id, "sequence": sequence, "kind": kind, "parent_release_id": parent_release_id, "created_at": created_at or utc_stamp(), "taxonomy_version": taxonomy_version, "records_count": len(records), "files": files}
             manifest = _signed(payload, private_key, key_id)
             _atomic_json(stage / "manifest.json", manifest)
             verify_release(stage, {key_id: private_key.public_key()})
@@ -544,7 +555,7 @@ def publish_withdrawals(*, root: Path | str, sequence: int, case_ids: list[str],
         previous = [int(p.stem) for p in _withdrawal_files(root)]
         _require(sequence == max(previous, default=0) + 1, "withdrawal sequence must be consecutive")
         cumulative = sorted(_withdrawn(root) | set(ids))
-        payload = _signed({"schema_version": 1, "sequence": sequence, "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "case_ids": cumulative}, private_key, key_id)
+        payload = _signed({"schema_version": 1, "sequence": sequence, "created_at": utc_stamp(), "case_ids": cumulative}, private_key, key_id)
         _require(len(canonical(payload)) <= MAX_RECORD_BYTES, "withdrawal inventory too large")
         _atomic_json(target, payload)
         return payload
