@@ -198,4 +198,3 @@ def test_retry_backoff_is_persisted_bounded_and_never_permanent(tmp_path):
         assert receipt.state["next_attempt_at"] - now[0] == days * 86400
         now[0] = receipt.state["next_attempt_at"]
         assert not ProjectRetry(store, "synthetic-project").deferred
-
