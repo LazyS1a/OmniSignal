@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 import pytest
 
-from omnisignal.workbench.analysis import AnalysisService
+from omnisignal.workbench.analysis import MAX_BATCH_ITEMS, MAX_QUEUED_JOBS, AnalysisService
 from omnisignal.workbench.app import create_app
 from omnisignal.workbench.auth import password_hash
 from omnisignal.workbench.store import Conflict, Store
@@ -18,7 +18,7 @@ from omnisignal.workbench.store import Conflict, Store
 
 BASE = "/workbench/api"
 SUGGESTION = {"purposes": ["brand"], "kind": "advertisement", "reason": "合成测试图中的颜色块观察",
-              "description": "合成样本", "ocr_text": "", "brand": ""}
+              "description": "合成样本", "ocr_text": "", "brand": "", "design": {"palette": "合成测试图主色为中性灰与深蓝。", "typography": "合成测试图使用无衬线粗体标题。", "composition": "合成测试图为居中单块版式。", "hierarchy": "标题先于说明文字被读到。", "imagery": "合成测试图由纯色块构成，无摄影元素。", "reusable_ideas": "可用单色块验证版式，不涉及真实品牌。", "applicability": "仅适用于本仓库的合成测试夹具。", "limitations": "合成图不包含真实素材信息，无法判断工艺与效果。"}}
 
 
 class FakeProvider:
@@ -220,14 +220,15 @@ def test_single_image_queue_and_batch_share_admission_capacity(prepared, monkeyp
 
 def test_queue_capacity_is_separate_from_daily_limit(prepared, monkeypatch):
     store, service, _ = prepared
-    monkeypatch.setenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", "1000")
+    monkeypatch.setenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", str(MAX_QUEUED_JOBS * 2))
     asset = add_asset(store, 1)
     with store.db() as db:
-        for index in range(100):
+        for index in range(MAX_QUEUED_JOBS):
             db.execute("INSERT INTO analysis_jobs(id,asset_id,revision,cache_key,provider,actor,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
                        (str(index), "historical-asset", 1, str(index), "test", "admin", "queued", "2026-01-01T00:00:00+00:00"))
     preview = service.preview_batch(selected(asset))
-    assert preview["quota"]["remaining"] == 900 and preview["quota"]["queue_remaining"] == 0
+    assert preview["quota"]["limit"] == MAX_QUEUED_JOBS * 2
+    assert preview["quota"]["queue_remaining"] == 0
     assert preview["items"][0]["reason_code"] == "queue_full"
 
 
@@ -278,7 +279,7 @@ def test_unlimited_preserves_queue_cap_and_permission_checks(prepared, monkeypat
     monkeypatch.setenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", "unlimited")
     asset, unknown = add_asset(store, 1), add_asset(store, 2, "unknown")
     with store.db() as db:
-        for index in range(100):
+        for index in range(MAX_QUEUED_JOBS):
             db.execute("INSERT INTO analysis_jobs(id,asset_id,revision,cache_key,provider,actor,status,created_at) VALUES(?,?,?,?,?,?,?,?)",
                        (str(index), "historical-asset", 1, str(index), "test", "admin", "queued", "2026-01-01T00:00:00+00:00"))
     preview = service.preview_batch(selected(asset, unknown))
@@ -287,7 +288,7 @@ def test_unlimited_preserves_queue_cap_and_permission_checks(prepared, monkeypat
     with pytest.raises(Conflict, match="队列已满"):
         service.enqueue(asset["id"], asset["revision"], "admin")
     with pytest.raises(Conflict, match="1 至 100"):
-        service.preview_batch([{"asset_id": str(number), "expected_revision": 1} for number in range(101)])
+        service.preview_batch([{"asset_id": str(number), "expected_revision": 1} for number in range(MAX_BATCH_ITEMS + 1)])
 
 
 def test_disabling_after_unlimited_enqueue_prevents_new_provider_calls(prepared, monkeypatch):

@@ -3,6 +3,7 @@ import base64
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import threading
 import time
@@ -165,6 +166,31 @@ def test_backup_restores_signed_revocations_without_private_signing_key(setup, t
     assert current["status"] == "excluded" and current["publication_status"] == "withdrawn"
     document = json.loads((destination / "published" / "withdrawals" / "1.json").read_text())
     verify_signature(document, {"synthetic-key": key.public_key()})
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended-path filesystem regression")
+def test_windows_long_backup_and_restore_paths_preserve_signed_images(setup, tmp_path):
+    from omnisignal.knowledge.release import read_latest, verify_release
+    app, web, key = setup
+    item = publish_sample(web)
+    deep = tmp_path / ("nested-" + "a" * 73) / ("nested-" + "b" * 73)
+    raw_snapshot, raw_destination = deep / "backup-with-long-nested-path", deep / "restored-with-long-nested-path"
+    assert len(str(raw_snapshot)) > 260
+    snapshot = backup(app.state.store.root, raw_snapshot)
+    manifest = json.loads((snapshot / "manifest.json").read_text(encoding="utf-8"))
+    assert all("\\" not in name and ":" not in name for name in manifest["files"])
+    destination = restore(snapshot, raw_destination)
+    latest = read_latest(destination / "published")
+    _, records = verify_release(destination / "published" / "releases" / latest["release_id"], {"synthetic-key": key.public_key()})
+    assert records[0]["case_id"] == item["id"]
+    assert Store(destination).asset(item["id"])["sha256"] == item["sha256"]
+
+
+@pytest.mark.parametrize("relative", ["nested-backup", "published/nested-backup"])
+def test_backup_extended_path_normalization_keeps_containment_guard(setup, relative):
+    app, _, _ = setup
+    with pytest.raises(ValueError, match="之外的新目录"):
+        backup(app.state.store.root, app.state.store.root / relative)
 
 
 def test_withdrawal_requires_admin_csrf_and_reason(setup):

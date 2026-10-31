@@ -20,9 +20,11 @@ import urllib.request
 from omnisignal.knowledge.curation import inspect_image
 from omnisignal.knowledge.design_collection import FetchError, PublicFetcher, USER_AGENT
 from omnisignal.knowledge.design_sources import SOURCES, canonical_url, discover, extract_article
-from omnisignal.workbench import ad_source
+from omnisignal.workbench import ad_source, potw_source
+from omnisignal.workbench.potw_transport import POTWTransport
+from omnisignal.workbench.acquisition import ArchiveCursor, ProjectProgress, daily_target, progress
 
-SOURCE_CONFIGS = {**SOURCES, "adsofbrands": ad_source.CONFIG}
+SOURCE_CONFIGS = {**SOURCES, "adsofbrands": ad_source.CONFIG, "potw": potw_source.CONFIG}
 
 
 ERRORS = {
@@ -44,6 +46,7 @@ ERRORS = {
     "unsupported_source": "此来源尚未通过自动获取验收，可先手工导入。",
     "parse_or_image_error": "部分项目的正文或图片不完整，已跳过，需检查来源适配。",
     "unexpected_error": "本次获取未完成，已有素材保留；请查看服务诊断。",
+    "access_barrier_unresolved": "来源的访问校验未能通过，已停止自动获取；请确认站点未更换防护。",
 }
 
 
@@ -115,15 +118,89 @@ def project_id(source_id, url):
     return source_id + "-" + hashlib.sha256(canonical_url(url).encode()).hexdigest()[:20]
 
 
+def _discover(site, config, fetcher):
+    """Return ``(listing_document, project_urls)`` for one source.
+
+    POTW is incremental and does not page through the 676-page archive: one
+    listing request already yields the newest ~40 projects, which is more than
+    a single run is allowed to import. Known projects are filtered downstream.
+    """
+    if site == "potw":
+        return _discover_potw(config, fetcher)
+    listing = fetcher.get(config["listing"])
+    if site == "adsofbrands":
+        return listing, ad_source.discover(listing)
+    return listing, discover(site, listing)
+
+
+def _discover_potw(config, fetcher):
+    """Newest projects from the site root, falling back to the deepest archive page."""
+    listing = fetcher.get(config["listing"])
+    urls = potw_source.discover(listing, config["listing"])
+    if urls:
+        return listing, urls
+    total = potw_source.discover_total_pages(listing)
+    if total and total >= 1:
+        paged = config["paged"].format(page=total)
+        page = fetcher.get(paged)
+        return page, potw_source.discover(page, paged)
+    return listing, urls
+
+
+def _extract(site, raw, url):
+    if site == "adsofbrands":
+        return ad_source.extract_article(raw, url)
+    if site == "potw":
+        return potw_source.extract_article(raw, url)
+    return extract_article(site, raw, url)
+
+
+def _image_description(article, candidate, *, index=None, total=None):
+    """Project body plus the per-image identity that distinguishes siblings.
+
+    Every image of one project shares the same article, so without the image
+    line a reviewer sees N identical descriptions and cannot tell which shot
+    they are approving.
+    """
+    parts = [article["text"]]
+    alt = (candidate.get("alt") or "").strip()
+    if alt:
+        parts.append(f"Image caption: {alt}")
+    if index is not None and total:
+        parts.append(f"Image {index} of {total}")
+    parts.append(f"Image file: {candidate['url'].rsplit('/', 1)[-1]}")
+    return "\n\n".join(parts)[:20000]
+
+
+def source_fetcher(site, config, reserve, default=BudgetedFetcher):
+    """Pick the transport a source needs.
+
+    POTW sits behind an edge that resets non-browser clients and serves a JS
+    cookie interstitial; it needs ``POTWTransport``. Everything else uses the
+    plain budgeted fetcher. Keeping the choice here means every caller —
+    production worker, scripts, tests — gets the right transport without
+    threading a factory argument through.
+    """
+    if site == "potw":
+        return POTWTransport(config["hosts"], reserve)
+    return default(config["hosts"], reserve)
+
+
 class WorkbenchCollector:
-    def __init__(self, store, *, fetcher_factory=BudgetedFetcher, clock=time.time):
-        self.store, self.factory, self.clock = store, fetcher_factory, clock
+    def __init__(self, store, *, fetcher_factory=None, clock=time.time):
+        self.store, self.clock = store, clock
+        self.factory = fetcher_factory
         self._stopping = threading.Event()
         self._wake = threading.Event()
         self._queue = queue.Queue(maxsize=20)
         self._queued = set()
         self._queue_lock = threading.Lock()
         self._thread = self._heartbeat_thread = None
+
+    def _build_fetcher(self, site, config, reserve):
+        if self.factory is not None:
+            return self.factory(config["hosts"], reserve)
+        return source_fetcher(site, config, reserve)
 
     def enqueue(self, plan_id):
         """Wake the single worker; never perform network work in an HTTP route."""
@@ -203,6 +280,9 @@ class WorkbenchCollector:
     def run(self, plan_id, force=False):
         if self._stopping.is_set():
             return None
+        target = daily_target()
+        if target and progress(self.store)["remaining"] == 0:
+            return None
         run_id = self.store.claim_plan(plan_id, force=force)
         if run_id is None:
             return None
@@ -224,57 +304,92 @@ class WorkbenchCollector:
             if site not in SOURCE_CONFIGS:
                 raise FetchError("unsupported_source")
             config = SOURCE_CONFIGS[site]
-            fetcher = self.factory(config["hosts"], reserve)
-            if isinstance(fetcher, BudgetedFetcher):
+            fetcher = self._build_fetcher(site, config, reserve)
+            if isinstance(fetcher, (BudgetedFetcher, POTWTransport)):
                 fetcher.stop_event = self._stopping
-            listing = fetcher.get(config["listing"])
-            urls = ad_source.discover(listing) if site == "adsofbrands" else discover(site, listing)
+            listing, urls = _discover(site, config, fetcher)
             if not urls:
                 raise FetchError("listing_structure_changed")
+            cursor = ArchiveCursor(self.store, site, config["listing"]) if target else None
+            if cursor:
+                cursor.observe(listing, config["listing"])
             known = set(self.store.known_project_ids(site))
             seen, attempts = set(), 0
             raw_project_limit = os.getenv("OMNISIGNAL_WORKBENCH_COLLECTION_PROJECT_LIMIT", "2")
-            project_limit = int(raw_project_limit) if raw_project_limit in {str(n) for n in range(1, 11)} else 2
+            project_limit = int(raw_project_limit) if raw_project_limit in {str(n) for n in range(1, 101)} else 2
             attempt_limit = max(6, project_limit * 3)
-            # Listing order wins. Never prepend the old demo seed to live discovery.
-            for url in urls:
-                identity = project_id(site, url)
-                if identity in known or identity in seen:
-                    continue
-                seen.add(identity)
-                if projects >= project_limit or attempts >= attempt_limit:
+            page_url = None
+            # Always check fresh listing first, then at most three advertised
+            # archive pages. HTTP allowance and crawl-delay still apply to all.
+            for page_number in range(4 if target else 1):
+                bounded = False
+                for url in urls:
+                    identity = project_id(site, url)
+                    receipt = ProjectProgress(self.store, site, identity) if target else None
+                    if (receipt.complete if receipt else identity in known) or identity in seen:
+                        continue
+                    if projects >= project_limit or attempts >= attempt_limit or (target and progress(self.store)["remaining"] == 0):
+                        bounded = True
+                        break
+                    seen.add(identity)
+                    attempts += 1
+                    try:
+                        raw = fetcher.get(url)
+                        article = _extract(site, raw, url)
+                        hashes, image_count = set(), receipt.valid_count if receipt else 0
+                        planned = [c for c in article["candidates"][:6]]
+                        for position, candidate in enumerate(planned, start=1):
+                            if receipt and receipt.considered(candidate["url"]):
+                                continue
+                            if image_count >= 3 or (target and progress(self.store)["remaining"] == 0):
+                                bounded = bool(target and progress(self.store)["remaining"] == 0)
+                                break
+                            content = fetcher.get(candidate["url"], image=True)
+                            try:
+                                inspect_image(content, hashes)
+                            except ValueError:
+                                if receipt:
+                                    receipt.record(candidate["url"], False)
+                                continue
+                            result = self.store.import_asset({
+                                "title": article["title"][:500], "brand": "",
+                                "description": _image_description(article, candidate, index=position, total=len(planned)),
+                                "source_url": canonical_url(url), "source_image_url": candidate["url"],
+                                "source_id": site, "project_id": identity,
+                            }, content, actor="collector", deduplicate_images=bool(target))
+                            image_count += 1
+                            imported += int(result["created"])
+                            if receipt:
+                                receipt.record(candidate["url"], True)
+                        if receipt and not bounded:
+                            receipt.finish()
+                        if not image_count:
+                            raise ValueError("no_usable_images")
+                        projects += 1
+                    except ValueError:
+                        skipped += 1
+                if not cursor or bounded:
                     break
-                attempts += 1
-                try:
-                    raw = fetcher.get(url)
-                    article = ad_source.extract_article(raw, url) if site == "adsofbrands" else extract_article(site, raw, url)
-                    hashes, image_count = set(), 0
-                    for candidate in article["candidates"][:6]:
-                        if image_count >= 3:
-                            break
-                        content = fetcher.get(candidate["url"], image=True)
-                        try:
-                            inspect_image(content, hashes)
-                        except ValueError:
-                            continue
-                        result = self.store.import_asset({
-                            "title": article["title"][:500], "brand": "",
-                            "description": article["text"][:20000],
-                            "source_url": canonical_url(url),
-                            "source_image_url": candidate["url"],
-                            "source_id": site, "project_id": identity,
-                        }, content, actor="collector")
-                        image_count += 1
-                        imported += int(result["created"])
-                    if not image_count:
-                        raise ValueError("no_usable_images")
-                    projects += 1
-                except ValueError:
-                    skipped += 1
+                if page_url:
+                    cursor.complete(page_url)
+                page_url = cursor.next()
+                if not page_url or page_number == 3 or projects >= project_limit or attempts >= attempt_limit:
+                    break
+                # Only persisted, same-site pagination discovered from a page
+                # may be followed. Fetcher rechecks host, robots and budgets.
+                page = fetcher.get(page_url)
+                cursor.observe(page, page_url)
+                urls = (potw_source.discover(page, page_url) if site == "potw" else
+                        ad_source.discover(page) if site == "adsofbrands" else discover(site, page))
+                if not urls:
+                    # A temporarily empty or changed archive is not evidence
+                    # that its candidates were processed. Keep the cursor for
+                    # a later normal run; do not silently lose this page.
+                    raise FetchError("listing_structure_changed")
             if skipped:
                 status, reason = "partial", ERRORS["parse_or_image_error"]
             elif imported:
-                reason = f"已获取 {projects} 个项目、{imported} 张图片，等待人工审核；尚未确认广告类型和用途权限。"
+                reason = f"已获取 {projects} 个项目、{imported} 张新图片，进入分类与审核流程；用途权限单独记录。"
         except FetchError as error:
             status = "stopped" if error.code in {"paused", "budget_exhausted", "worker_stopped", "request_blocked"} else "partial" if imported else "failed"
             reason = explain(error.code)
@@ -283,4 +398,5 @@ class WorkbenchCollector:
         except Exception:
             status, reason = "partial" if imported else "failed", ERRORS["unexpected_error"]
         self.store.finish_run(plan_id, run_id, status, reason, imported)
-        return {"run_id": run_id, "status": status, "reason": reason, "imported": imported}
+        return {"run_id": run_id, "status": status, "reason": reason, "imported": imported,
+                "acquisition": progress(self.store) if target else None}

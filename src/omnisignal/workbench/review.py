@@ -93,19 +93,92 @@ def fresh_review(asset):
     if "reviewed_analysis" not in asset:
         return None
     review = asset["reviewed_analysis"]
-    require(isinstance(review, dict) and set(review) == BOUND_FIELDS, "已保存的审核分析格式无效，请重新审核")
-    require(review["schema_version"] == 1 and type(review["revision"]) is int
+    automated = isinstance(review, dict) and review.get("schema_version") == 2
+    require(isinstance(review, dict) and set(review) == (BOUND_FIELDS | {"review_method"} if automated else BOUND_FIELDS), "已保存的审核分析格式无效，请重新审核")
+    require(review["schema_version"] in {1, 2} and type(review["revision"]) is int
             and review["asset_id"] == asset["id"] and review["revision"] == asset["revision"]
             and review["sha256"] == asset["sha256"], "审核分析已过期，发布前请对当前素材版本重新审核")
     validated_content({key: review[key] for key in ("source_job_id", "summary_zh", "design")})
     require(isinstance(review["reviewed_by"], str) and bool(review["reviewed_by"].strip())
             and isinstance(review["reviewed_at"], str) and bool(review["reviewed_at"]), "审核来源信息不完整")
-    if review["source_job_id"] is None:
+    if automated:
+        require(review["review_method"] == "automated" and review["reviewed_by"] == "system:auto-editorial"
+                and review["provenance"] == "model_automated_review" and isinstance(review["source_job_id"], str)
+                and bool(review["source_job_id"]) and isinstance(review["model_version"], str)
+                and 0 < len(review["model_version"]) <= 200 and review["model_version"] != "none", "自动审核来源无效")
+    elif review["source_job_id"] is None:
         require(review["model_version"] == "none" and review["provenance"] in {"manual_human_review", "assistant_editorial_review"}, "独立整理不能伪称模型任务来源")
     else:
         require(isinstance(review["model_version"], str) and 0 < len(review["model_version"]) <= 200
                 and review["model_version"] != "none" and review["provenance"] == "model_assisted_human_review", "模型辅助审核来源无效")
     return review
+
+
+def automated_candidate(db, asset, job_id):
+    """Conservative acceptance gate, not a claim of human or quality certification."""
+    from .taxonomy import validated_taxonomy
+    require(asset.get("status") == "pending" and not asset.get("reviewed_analysis")
+            and not asset.get("reviewed_taxonomy"), "human_review_required")
+    require(asset.get("permissions", {}).get("analysis") == "allowed", "analysis_permission_required")
+    job = completed_source_job(db, asset, job_id)
+    require(job is not None and job["charged"] == 1, "stale_or_uncompleted_job")
+    require(asset.get("analysis_job_id") == job_id and asset.get("analysis_suggestion_revision") == asset["revision"]
+            and asset.get("analysis_suggestion") == job["suggestion"], "stale_suggestion")
+    suggestion = job["suggestion"]
+    require(job["model_version"].lower().startswith("qwen"), "qwen_model_required")
+    require(suggestion.get("kind") in {"advertisement", "reference"}, "uncertain_kind")
+    from .analysis import _result
+    clean = {key: suggestion[key] for key in ("purposes", "kind", "reason", "description", "ocr_text", "brand", "design", "taxonomy") if key in suggestion}
+    _result(clean, asset["id"], require_taxonomy=True)
+    taxonomy = validated_taxonomy(clean["taxonomy"])
+    require(len(taxonomy["note"]) >= 10 and re.search(r"图|画面|可见", taxonomy["note"]) is not None,
+            "taxonomy_visual_evidence_required")
+    require(not any(word in clean["reason"] + taxonomy["note"] for word in ("无法判断", "无法确定", "不确定", "待确认", "可能是")), "uncertain_evidence")
+    require(len(clean["description"].strip()) >= 12 and re.search(r"[\u3400-\u9fff]", clean["description"])
+            and len(clean["reason"].strip()) >= 10, "insufficient_summary")
+    placeholders = {"图中未体现", "无法判断", "未知", "不适用", "无", "none", "n/a"}
+    require(all(len(text.strip()) >= 4 for text in clean["design"].values()), "insufficient_design")
+    require(all(len(clean["design"][field].strip()) >= 10 and clean["design"][field].strip() not in placeholders
+                for field in ("palette", "composition", "hierarchy", "imagery", "reusable_ideas", "limitations")), "insufficient_design")
+    return job, clean, taxonomy
+
+
+def apply_automated_review(store, asset_id, expected_revision, job_id, actor="system:auto-editorial"):
+    """Internal service entry; HTTP review payloads still cannot request automated review."""
+    from .taxonomy import bind_reviewed_taxonomy
+    require(actor == "system:auto-editorial", "invalid_automated_actor")
+    with store.db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT document FROM assets WHERE id=?", (asset_id,)).fetchone()
+        require(row is not None, "missing_asset")
+        asset = json.loads(row[0])
+        require(type(expected_revision) is int and asset["revision"] == expected_revision, "revision_changed")
+        job, suggestion, taxonomy = automated_candidate(db, asset, job_id)
+        path = store.images / asset["image_file"]
+        require(path.parent.resolve() == store.images.resolve() and path.is_file() and not path.is_symlink()
+                and path.stat().st_size <= 10 * 1024 * 1024
+                and hashlib.sha256(path.read_bytes()).hexdigest() == asset["sha256"], "image_changed")
+        new_revision = asset["revision"] + 1
+        reviewed = {"source_job_id": job_id, "summary_zh": suggestion["description"].strip(),
+                    "design": {field: {"text": suggestion["design"][field].strip(),
+                                       "kind": "visual_observation" if index < 5 else "analysis_inference"}
+                               for index, field in enumerate(DESIGN_FIELDS)}}
+        validated_content(reviewed)
+        reviewed.update(schema_version=2, asset_id=asset_id, revision=new_revision, sha256=asset["sha256"],
+                        reviewed_by=actor, reviewed_at=stamp(), model_version=job["model_version"],
+                        provenance="model_automated_review", review_method="automated")
+        classified = bind_reviewed_taxonomy(asset, taxonomy, actor, new_revision)
+        classified.update(schema_version=2, review_method="automated", provenance="model_automated_review",
+                          source_job_id=job_id, model_version=job["model_version"])
+        asset.update(status="accepted", revision=new_revision, kind=suggestion["kind"], purposes=suggestion["purposes"],
+                     reason=suggestion["reason"], reviewed_analysis=reviewed, reviewed_taxonomy=classified,
+                     review_method="automated", analysis_status="analyzed")
+        require(db.execute("UPDATE assets SET document=?,status='accepted',revision=? WHERE id=? AND revision=?",
+                           (encode(asset), new_revision, asset_id, expected_revision)).rowcount == 1, "revision_changed")
+        store.audit(db, asset_id, actor, "automated_review", {"revision": new_revision, "source_revision": expected_revision,
+                    "source_job_id": job_id, "model_version": job["model_version"], "review_method": "automated",
+                    "provenance": "model_automated_review", "tags": taxonomy["tags"]})
+        return describe_review(asset, db)
 
 
 def describe_review(asset, db=None):

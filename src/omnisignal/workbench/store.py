@@ -52,6 +52,9 @@ def sources():
          "description": "品牌设计与包装参考。逐图审核后才能进入广告主库。", "requires_credentials": False},
         {"id": "itsnicethat", "label": "It’s Nice That", "category": "supplemental", "verified": True,
          "description": "平面设计参考。正文或图片不完整时会跳过。", "requires_credentials": False},
+        {"id": "potw", "label": "Packaging of the World", "category": "supplemental", "verified": True,
+         "description": "包装设计档案。只取项目正文与本站上传图片，遵守站点 Crawl-Delay；逐图审核后才能进入广告主库。",
+         "requires_credentials": False},
         {"id": "adsoftheworld", "label": "Ads of the World", "category": "advertising", "verified": False,
          "description": "候选广告来源：自动获取尚未验收，可手工导入有来源的图片。", "requires_credentials": False},
         {"id": "manual", "label": "手工导入", "category": "manual", "verified": True,
@@ -136,7 +139,7 @@ class Store:
         db.execute("INSERT INTO audit(entity,actor,action,at,details) VALUES(?,?,?,?,?)",
                    (entity, actor, action, stamp(), encode(details or {})))
 
-    def import_asset(self, meta: dict, content: bytes, actor="operator"):
+    def import_asset(self, meta: dict, content: bytes, actor="operator", *, deduplicate_images=False):
         require(0 < len(content) <= 10 * 1024 * 1024, "图片应小于 10 MiB")
         require(isinstance(meta.get("title"), str) and 0 < len(meta["title"].strip()) <= 500, "请填写不超过 500 字的标题")
         source_url = public_url(meta.get("source_url"))
@@ -179,6 +182,8 @@ class Store:
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT document FROM assets WHERE id=?", (asset_id,)).fetchone()
+            if not existing and deduplicate_images:
+                existing = db.execute("SELECT document FROM assets WHERE json_extract(document,'$.sha256')=? LIMIT 1", (sha,)).fetchone()
             if existing:
                 return {**json.loads(existing[0]), "created": False}
             for path, data in ((image_path, content), (thumb_path, output.getvalue())):

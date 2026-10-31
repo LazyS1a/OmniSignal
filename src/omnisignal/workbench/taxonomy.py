@@ -6,6 +6,23 @@ from .store import Conflict, require, stamp
 
 BOUND_FIELDS = {"schema_version", "taxonomy_version", "asset_id", "revision", "sha256",
                 "reviewed_by", "reviewed_at", "tags", "note"}
+AUTO_FIELDS = {"review_method", "provenance", "source_job_id", "model_version"}
+
+
+def validated_suggestion_taxonomy(payload):
+    """Unknown model labels may be empty; they can never pass reviewed taxonomy."""
+    require(isinstance(payload, dict) and set(payload) == {"tags", "note"}, "模型分类必须且仅包含 tags 和 note")
+    tags, note = payload["tags"], payload["note"]
+    require(isinstance(tags, dict) and set(tags) == set(TAXONOMY), "模型分类分组无效")
+    normalized = {}
+    for group, choices in TAXONOMY.items():
+        values = tags[group]
+        require(isinstance(values, list) and len(values) <= len(choices)
+                and all(isinstance(value, str) and value in choices for value in values)
+                and len(values) == len(set(values)), "模型分类不在当前字典中或包含重复标签")
+        normalized[group] = sorted(values)
+    require(isinstance(note, str) and 0 < len(note.strip()) <= 2000, "模型分类需要逐图依据")
+    return {"tags": normalized, "note": note.strip()}
 
 
 def validated_taxonomy(payload):
@@ -39,9 +56,10 @@ def fresh_taxonomy(asset):
     review = asset.get("reviewed_taxonomy")
     if review is None:
         return None
-    require(isinstance(review, dict) and set(review) == BOUND_FIELDS,
+    automated = isinstance(review, dict) and review.get("schema_version") == 2
+    require(isinstance(review, dict) and set(review) == (BOUND_FIELDS | AUTO_FIELDS if automated else BOUND_FIELDS),
             "已保存的分类审核格式无效，请重新核对标签")
-    require(review["schema_version"] == 1 and review["taxonomy_version"] == TAXONOMY_VERSION
+    require(review["schema_version"] in {1, 2} and review["taxonomy_version"] == TAXONOMY_VERSION
             and type(review["revision"]) is int and review["revision"] == asset["revision"]
             and review["asset_id"] == asset["id"] and review["sha256"] == asset["sha256"],
             "分类审核已过期，发布前请核对当前版本标签")
@@ -49,6 +67,12 @@ def fresh_taxonomy(asset):
     require(isinstance(review["reviewed_by"], str) and bool(review["reviewed_by"].strip())
             and isinstance(review["reviewed_at"], str) and bool(review["reviewed_at"]),
             "分类审核来源信息不完整")
+    if automated:
+        require(review["review_method"] == "automated" and review["provenance"] == "model_automated_review"
+                and review["reviewed_by"] == "system:auto-editorial", "自动分类审核来源无效")
+        analysis = asset.get("reviewed_analysis", {})
+        require(all(review.get(key) == analysis.get(key) for key in ("source_job_id", "model_version", "provenance"))
+                and isinstance(review["source_job_id"], str) and bool(review["source_job_id"]), "自动分类与分析任务来源不一致")
     return review
 
 

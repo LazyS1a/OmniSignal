@@ -1,6 +1,6 @@
 """Real SQLite batch service + synthetic images; no network or paid model."""
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
 import json
 import threading
@@ -34,7 +34,12 @@ class FakeProvider:
         if self.fail:
             raise RuntimeError("private-provider-detail")
         return {"purposes": ["brand"], "kind": "advertisement", "reason": "合成图形观察",
-                "description": "合成色块", "ocr_text": "", "brand": ""}
+                "description": "合成色块", "ocr_text": "", "brand": "",
+                "design": {"palette": "合成测试图主色为中性灰。", "typography": "合成测试图使用无衬线标题。",
+                           "composition": "合成测试图为居中单块版式。", "hierarchy": "标题先于说明被读到。",
+                           "imagery": "合成测试图由纯色块构成。", "reusable_ideas": "可用单色块验证版式。",
+                           "applicability": "仅适用于本仓库的合成测试夹具。",
+                           "limitations": "合成图不含真实素材信息，无法判断工艺与效果。"}}
 
 
 def add(store, number, permission="allowed", project=None):
@@ -51,6 +56,25 @@ def add(store, number, permission="allowed", project=None):
 
 def selected(asset):
     return [{"asset_id": asset["id"], "expected_revision": asset["revision"]}]
+
+
+def bulk_assets(store, amount):
+    """Bulk seed synthetic metadata, sharing one tiny test PNG; never call a model.
+
+    The real SQLite batch admission/receipt code still handles every unique asset.
+    Sharing image bytes makes the 2,000-item boundary test cheap and deterministic.
+    """
+    template = add(store, 0)
+    assets = [template]
+    with store.db() as db:
+        for number in range(1, amount):
+            asset = deepcopy(template)
+            asset.update(id=f"synthetic-{number:04d}", title=f"合成素材{number}",
+                         source_url=f"https://example.invalid/{number}", project_id=f"project-{number}")
+            db.execute("INSERT INTO assets(id,document,status,revision,created_at) VALUES(?,?,?,?,?)",
+                       (asset["id"], json.dumps(asset), asset["status"], asset["revision"], asset["created_at"]))
+            assets.append(asset)
+    return assets
 
 
 @pytest.fixture
@@ -134,9 +158,10 @@ def test_window_never_backfills_or_automatically_expands(prepared, day, hour, mi
 
 
 @pytest.mark.parametrize("patch", [
-    {"start_date": "2026-10-26"}, {"end_date": "2026-11-03"}, {"timezone": "UTC"},
-    {"weekdays": [0, 1, 2, 3, 4, 5]}, {"weekdays": [False, 1, 2, 3, 4]},
-    {"hour": 15}, {"minute": 1}, {"target": 0}, {"target": 101}, {"target": True},
+    {"start_date": "2026-10-26", "end_date": "2026-10-25"}, {"end_date": "2099-01-01"}, {"timezone": "UTC"},
+    {"weekdays": []}, {"weekdays": [0, 0]}, {"weekdays": [1, 0]}, {"weekdays": [0, 7]},
+    {"weekdays": [False, 1, 2, 3, 4]}, {"weekdays": "0123456"},
+    {"hour": 15}, {"minute": 1}, {"target": 0}, {"target": 2001}, {"target": True},
     {"review_target_min": 9}, {"review_target_max": 21}, {"model": "unsafe-override"},
     {"permissions": "allowed"}, {"publish": True},
 ])
@@ -147,6 +172,21 @@ def test_invalid_policy_fails_closed(prepared, patch):
     result = pilot(prepared).tick(when())
     assert result["state"] == "blocked" and result["diagnostic"] == "invalid_policy"
     assert not jobs(analysis) and provider.calls == 0
+
+
+@pytest.mark.parametrize("patch", [
+    # Widening the window and raising the batch target are operational choices,
+    # not contract violations: the scheduler reads both from the policy.
+    {"end_date": "2026-12-31", "target": 120},
+    {"target": 1000},
+])
+def test_wider_window_and_larger_target_are_accepted(prepared, patch):
+    store, analysis, provider, path = prepared
+    add(store, 1)
+    path.write_text(json.dumps({**POLICY, **patch}), encoding="utf-8")
+    result = pilot(prepared).tick(when())
+    assert result["diagnostic"] is None
+    assert result["state"] in {"running", "finished", "no_eligible", "waiting_window"}
 
 
 @pytest.mark.parametrize("contents", ["{", "[]", '{"target":30,"target":31}', "x" * 16001])
@@ -409,3 +449,249 @@ def test_policy_change_after_intent_does_not_expand_batch(prepared):
     path.write_text(json.dumps({**POLICY, "target": 100}), encoding="utf-8")
     result = pilot(prepared).tick(when(hour=17))
     assert result["diagnostic"] == "policy_changed_after_intent" and len(jobs(analysis)) == 1
+
+
+@pytest.mark.parametrize("amount", [101, 120, 2000])
+def test_chunked_targets_preserve_all_receipts_and_aggregate_on_restart(prepared, monkeypatch, amount):
+    store, analysis, provider, path = prepared
+    bulk_assets(store, amount)
+    path.write_text(json.dumps({**POLICY, "target": amount}), encoding="utf-8")
+    original, requests = analysis.enqueue_batch, []
+    def record(request, items, actor):
+        requests.append((request, deepcopy(items)))
+        return original(request, items, actor)
+    monkeypatch.setattr(analysis, "enqueue_batch", record)
+    p = pilot(prepared)
+    result = p.tick(when())
+    assert result["diagnostic"] is None
+    report = result["report"]
+    # Respect the existing queue cap instead of silently expanding it to target.
+    from omnisignal.workbench.analysis import MAX_QUEUED_JOBS
+    admitted = min(amount, MAX_QUEUED_JOBS)
+    assert report["eligible_at_plan"] == amount
+    assert report["submitted"] == report["queued"] == report["submitted_projects"] == admitted
+    assert report["submission_shortfall"] == amount - admitted
+    assert report["skip_reasons"] == ({"queue_full": amount - admitted} if amount > admitted else {})
+    saved_path, saved = intent(p)
+    assert saved["phase"] == "observed" and len(saved["items"]) == amount
+    assert [request for request, _ in requests] == p._chunk_ids(saved["day"])[:(amount + 99) // 100]
+    assert [item for _, items in requests for item in items] == saved["items"]
+    if amount == 2000:
+        assert saved_path.stat().st_size > 128000
+    frozen = saved_path.read_bytes()
+    requests.clear()
+    restarted = pilot(prepared).tick(when(hour=18))
+    assert restarted["diagnostic"] is None and restarted["report"]["submitted"] == admitted
+    assert not requests and len(jobs(analysis)) == admitted and provider.calls == 0
+    assert saved_path.read_bytes() == frozen
+
+
+def test_existing_prepared_101_intent_is_read_without_rebuilding_selection(prepared, monkeypatch):
+    store, analysis, provider, path = prepared
+    bulk_assets(store, 101)
+    policy = {**POLICY, "target": 120, "end_date": "2026-12-31"}
+    path.write_text(json.dumps(policy), encoding="utf-8")
+    p = pilot(prepared)
+    p.root.mkdir(parents=True)
+    state = p._plan(policy, when())
+    p._save(state)
+    saved_path, frozen = intent(p)
+    frozen_bytes = saved_path.read_bytes()
+    assert len(frozen["items"]) == 101 and frozen["phase"] == "prepared"
+    assert pilot(prepared)._read_states()[frozen["day"]] == frozen
+    assert saved_path.read_bytes() == frozen_bytes  # Read repair never rewrites an old checksum.
+    add(store, 102)
+    monkeypatch.setattr(p, "_plan", lambda *args: pytest.fail("must use the saved selection"))
+    result = p.tick(when(hour=17))
+    assert result["diagnostic"] is None and result["report"]["submitted"] == 101
+    _, resumed = intent(p)
+    assert {key: value for key, value in resumed.items() if key not in {"phase", "checksum"}} == {
+        key: value for key, value in frozen.items() if key not in {"phase", "checksum"}}
+    assert resumed["phase"] == "observed"
+    assert resumed["checksum"] == _hash({key: value for key, value in resumed.items() if key != "checksum"})
+    assert len(jobs(analysis)) == 101 and provider.calls == 0
+
+
+@pytest.mark.parametrize("failed_chunk,commit_before_failure", [(0, False), (0, True), (1, False), (1, True)])
+def test_chunk_failure_recovery_submits_only_missing_original_ids(prepared, monkeypatch, failed_chunk, commit_before_failure):
+    store, analysis, provider, path = prepared
+    bulk_assets(store, 120)
+    path.write_text(json.dumps({**POLICY, "target": 120}), encoding="utf-8")
+    p = pilot(prepared)
+    ids = p._chunk_ids("2026-10-27")[:2]
+    original, requests = analysis.enqueue_batch, []
+    def fail_once(request, items, actor):
+        requests.append((request, deepcopy(items)))
+        if request == ids[failed_chunk]:
+            if commit_before_failure:
+                original(request, items, actor)
+            raise RuntimeError("private-response")
+        return original(request, items, actor)
+    monkeypatch.setattr(analysis, "enqueue_batch", fail_once)
+    result = p.tick(when())
+    committed_chunks = failed_chunk + int(commit_before_failure)
+    assert len(requests) == failed_chunk + 1
+    assert result["report"]["submitted"] == (120 if committed_chunks == 2 else 100 if committed_chunks == 1 else 0)
+    assert result["diagnostic"] == (None if committed_chunks == 2 else "submission_uncertain")
+    _, frozen = intent(p)
+    resumed_requests = []
+    def resume(request, items, actor):
+        resumed_requests.append((request, deepcopy(items)))
+        return original(request, items, actor)
+    monkeypatch.setattr(analysis, "enqueue_batch", resume)
+    restarted = pilot(prepared).tick(when(hour=17))
+    assert restarted["diagnostic"] is None and restarted["report"]["submitted"] == 120
+    assert [request for request, _ in resumed_requests] == ids[committed_chunks:]
+    for request, items in resumed_requests:
+        offset = ids.index(request) * 100
+        assert items == frozen["items"][offset:offset + 100]
+    assert pilot(prepared).tick(when(hour=18))["report"]["submitted"] == 120
+    assert len(resumed_requests) == 2 - committed_chunks and len(jobs(analysis)) == 120 and provider.calls == 0
+    assert "private-response" not in json.dumps(result)
+
+
+def test_observed_tail_receipt_missing_blocks_without_resubmission(prepared, monkeypatch):
+    store, analysis, _, path = prepared
+    bulk_assets(store, 120)
+    path.write_text(json.dumps({**POLICY, "target": 120}), encoding="utf-8")
+    p = pilot(prepared)
+    assert p.tick(when())["report"]["submitted"] == 120
+    tail = p._chunk_ids("2026-10-27")[1]
+    original = analysis.batch
+    monkeypatch.setattr(analysis, "batch", lambda request, actor: None if request == tail else original(request, actor))
+    monkeypatch.setattr(analysis, "enqueue_batch", lambda *args: pytest.fail("observed jobs must never replay"))
+    result = pilot(prepared).tick(when(hour=17))
+    assert result["diagnostic"] == "observed_batch_missing" and len(jobs(analysis)) == 120
+
+
+def test_receipt_from_different_frozen_payload_blocks_missing_chunk(prepared, monkeypatch):
+    store, analysis, _, path = prepared
+    bulk_assets(store, 120)
+    policy = {**POLICY, "target": 120}
+    path.write_text(json.dumps(policy), encoding="utf-8")
+    p = pilot(prepared)
+    p.root.mkdir(parents=True)
+    state = p._plan(policy, when())
+    p._save(state)
+    analysis.enqueue_batch(state["request_id"], state["items"][1:101], ACTOR)
+    monkeypatch.setattr(analysis, "enqueue_batch", lambda *args: pytest.fail("conflicting receipt must block"))
+    result = p.tick(when())
+    assert result["diagnostic"] == "batch_payload_mismatch" and len(jobs(analysis)) == 100
+
+
+def test_duplicate_asset_across_chunks_is_invalid_even_with_valid_checksum(prepared):
+    store, analysis, _, path = prepared
+    bulk_assets(store, 101)
+    policy = {**POLICY, "target": 120}
+    path.write_text(json.dumps(policy), encoding="utf-8")
+    p = pilot(prepared)
+    p.root.mkdir(parents=True)
+    state = p._plan(policy, when())
+    duplicate = state["items"][0]
+    state["projects"].pop(state["items"][-1]["asset_id"])
+    state["items"][-1] = deepcopy(duplicate)
+    p._save(state)
+    assert p.tick(when())["diagnostic"] == "invalid_state" and not jobs(analysis)
+
+
+def test_cross_chunk_progress_and_review_counts_include_every_chunk(prepared):
+    store, analysis, provider, path = prepared
+    assets = bulk_assets(store, 120)
+    path.write_text(json.dumps({**POLICY, "target": 120}), encoding="utf-8")
+    p = pilot(prepared)
+    assert p.tick(when())["report"]["submitted"] == 120
+    for _ in range(100):
+        analysis.run_pending()
+    provider.fail = True
+    drain(analysis)
+    report = pilot(prepared).tick(when(hour=17))["report"]
+    assert report["state"] == "finished" and report["submitted"] == report["submitted_projects"] == 120
+    assert report["analysed_images"] == report["projects_covered"] == report["requires_human_review"] == 100
+    assert report["failed"] == report["analysis_shortfall"] == 20 and report["queued"] == report["running"] == 0
+    assert report["reviewed_count"] is None and provider.calls == 120
+    assert all(store.asset(asset["id"])["status"] == "pending" for asset in assets)
+
+
+def test_partial_prior_day_expires_without_submitting_its_missing_chunk(prepared, monkeypatch):
+    store, analysis, provider, path = prepared
+    bulk_assets(store, 120)
+    path.write_text(json.dumps({**POLICY, "target": 120}), encoding="utf-8")
+    p = pilot(prepared)
+    original = analysis.enqueue_batch
+    old_ids = p._chunk_ids("2026-10-27")[:2]
+    def stop_after_first(request, items, actor):
+        if request == old_ids[1]:
+            raise Crash()
+        return original(request, items, actor)
+    monkeypatch.setattr(analysis, "enqueue_batch", stop_after_first)
+    with pytest.raises(Crash):
+        p.tick(when())
+    requests = []
+    def resume(request, items, actor):
+        requests.append(request)
+        return original(request, items, actor)
+    monkeypatch.setattr(analysis, "enqueue_batch", resume)
+    result = pilot(prepared).tick(when("2026-10-28"))
+    prior = next(report for report in result["recent"] if report["day"] == "2026-10-27")
+    assert prior["state"] == "expired_intent" and prior["submitted"] == prior["queued"] == 100
+    assert prior["submission_shortfall"] == 20 and intent(p)[1]["phase"] == "expired"
+    assert requests == [_request("2026-10-28")]
+    assert result["report"]["submitted"] == 20 and len(jobs(analysis)) == 120 and provider.calls == 0
+    assert pilot(prepared).tick(when("2026-10-28", 17))["report"]["submitted"] == 20
+    assert requests == [_request("2026-10-28")]
+
+
+def test_all_seven_days_support_long_history_and_keep_original_workday_policy(prepared):
+    store, analysis, provider, path = prepared
+    add(store, 1)
+    p = pilot(prepared)
+    assert p.tick(when())["report"]["submitted"] == 1
+    original_bytes = intent(p)[0].read_bytes()
+    next_policy = {**POLICY, "weekdays": list(range(7)), "end_date": "2026-12-31", "target": 120}
+    path.write_text(json.dumps(next_policy), encoding="utf-8")
+    for offset in range(1, 11):
+        day = (when().date() + timedelta(days=offset)).isoformat()
+        add(store, offset + 1)
+        result = pilot(prepared).tick(when(day))
+        assert result["diagnostic"] is None and result["report"]["submitted"] == 1
+        assert result["report"]["day"] == day
+        _, stored = intent(p, day)
+        assert stored["policy"] == next_policy
+    assert len(p._read_states()) == 11 and intent(p)[0].read_bytes() == original_bytes
+    assert len(jobs(analysis)) == 11 and provider.calls == 0
+
+
+@pytest.mark.parametrize("day", ["2026-10-31", "2026-11-01"])
+def test_weekend_selected_by_policy_is_a_real_run_day(prepared, day):
+    store, analysis, provider, path = prepared
+    add(store, 1)
+    policy = {**POLICY, "weekdays": [5, 6], "target": 100}
+    path.write_text(json.dumps(policy), encoding="utf-8")
+    p = pilot(prepared)
+    assert p.tick(when(day, 15, 59))["state"] == "waiting_window"
+    result = p.tick(when(day))
+    assert result["diagnostic"] is None and result["report"]["submitted"] == 1
+    assert p._read_states()[day]["policy"] == policy and provider.calls == 0
+
+
+def test_stored_day_must_be_allowed_by_its_own_policy(prepared):
+    _, analysis, _, path = prepared
+    p = pilot(prepared)
+    p.root.mkdir(parents=True)
+    state = p._plan(POLICY, when("2026-10-31"))
+    p._save(state)  # Valid checksum does not authorize a Saturday under the old policy.
+    path.write_text(json.dumps({**POLICY, "weekdays": list(range(7))}), encoding="utf-8")
+    assert p.tick(when("2026-11-01"))["diagnostic"] == "invalid_state" and not jobs(analysis)
+
+
+def test_late_orphan_tail_receipt_is_found_beyond_original_seven_day_window(prepared):
+    store, analysis, _, path = prepared
+    asset = add(store, 1)
+    policy = {**POLICY, "weekdays": list(range(7)), "end_date": "2026-12-31", "target": 120}
+    path.write_text(json.dumps(policy), encoding="utf-8")
+    p = pilot(prepared)
+    analysis.enqueue_batch(p._chunk_ids("2026-11-05")[1], selected(asset), ACTOR)
+    add(store, 2)
+    result = p.tick(when("2026-11-06"))
+    assert result["diagnostic"] == "batch_without_intent" and len(jobs(analysis)) == 1
+    assert not list(p.root.glob("intent-*.json"))

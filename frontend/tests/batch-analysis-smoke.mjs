@@ -44,7 +44,7 @@ class FakeProvider:
   (root/'calls.json').write_text(json.dumps({'count':self.calls}),encoding='utf-8')
   time.sleep(0.7)
   if asset['title'].startswith('B '): raise ValueError('synthetic-failure')
-  return {'purposes':['brand'],'kind':'reference','reason':'SYNTHETIC UI TEST ONLY','description':'Synthetic fixture','ocr_text':'SYNTHETIC','brand':'TEST'}
+  return {'purposes':['brand'],'kind':'reference','reason':'SYNTHETIC UI TEST ONLY','description':'Synthetic fixture','ocr_text':'SYNTHETIC','brand':'TEST','design':{k:'Synthetic design observation' for k in ['palette','typography','composition','hierarchy','imagery','reusable_ideas','applicability','limitations']}}
 provider=FakeProvider()
 RealService=module.AnalysisService
 module.AnalysisService=lambda store:RealService(store,provider)

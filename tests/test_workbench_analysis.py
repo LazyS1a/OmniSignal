@@ -13,7 +13,7 @@ from omnisignal.workbench.store import Conflict, Store
 
 
 SUGGESTION = {"purposes": ["brand", "conversion"], "kind": "advertisement", "reason": "图中有品牌字样；促销目的需人工确认",
-              "description": "合成图片说明", "ocr_text": "SYNTHETIC", "brand": "Synthetic"}
+              "description": "合成图片说明", "ocr_text": "SYNTHETIC", "brand": "Synthetic", "design": {"palette": "合成测试图主色为中性灰与深蓝。", "typography": "合成测试图使用无衬线粗体标题。", "composition": "合成测试图为居中单块版式。", "hierarchy": "标题先于说明文字被读到。", "imagery": "合成测试图由纯色块构成，无摄影元素。", "reusable_ideas": "可用单色块验证版式，不涉及真实品牌。", "applicability": "仅适用于本仓库的合成测试夹具。", "limitations": "合成图不包含真实素材信息，无法判断工艺与效果。"}}
 
 
 class FakeProvider:

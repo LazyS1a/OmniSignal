@@ -15,8 +15,24 @@ from .auth import password_hash
 from .store import Store
 
 
+def _filesystem_path(value):
+    """Use extended Windows paths only for local file I/O.
+
+    Snapshots keep ordinary relative POSIX names in their manifest. Prefixing
+    all three roots consistently also preserves containment/link checks; a
+    Windows MAX_PATH limit must not silently omit nested signed image files.
+    """
+    path = os.path.abspath(os.fspath(value))
+    if os.name == "nt" and not path.startswith("\\\\?\\"):
+        if path.startswith("\\\\.\\"):
+            raise ValueError("备份不支持设备路径")
+        path = "\\\\?\\UNC\\" + path[2:] if path.startswith("\\\\") else "\\\\?\\" + path
+    return Path(path).resolve()
+
+
 def _copy_private_file(source, destination):
     """Copy new files with private permissions without replacing existing paths."""
+    source, destination = _filesystem_path(source), _filesystem_path(destination)
     with Path(source).open("rb") as reader:
         fd=os.open(destination,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,"wb") as writer:
@@ -47,9 +63,9 @@ def initialize(root, username, role):
 
 
 def backup(root, destination):
-    store=Store(root)
-    target=Path(destination).resolve()
-    published=Path(os.getenv("OMNISIGNAL_KNOWLEDGE_DIR",str(store.root/"published"))).resolve()
+    store=Store(_filesystem_path(root))
+    target=_filesystem_path(destination)
+    published=_filesystem_path(os.getenv("OMNISIGNAL_KNOWLEDGE_DIR",str(store.root/"published")))
     if target.exists() or target.is_relative_to(store.root) or target.is_relative_to(published):
         raise ValueError("备份目标必须是工作台目录之外的新目录")
     target.mkdir(parents=True,mode=0o700)
@@ -80,8 +96,8 @@ def backup(root, destination):
 
 
 def restore(source, destination):
-    source=Path(source).resolve()
-    destination=Path(destination).resolve()
+    source=_filesystem_path(source)
+    destination=_filesystem_path(destination)
     if destination.exists():
         raise ValueError("恢复目标必须是新目录；不会覆盖运行中的数据")
     manifest_path=source/"manifest.json"

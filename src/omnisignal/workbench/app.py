@@ -84,6 +84,8 @@ def create_app(root=None, *, start_worker=None, frontend=None):
     analysis=AnalysisService(store)
     from .daily_pilot import DailyPilot
     pilot=DailyPilot(store,analysis,policy_path=os.getenv("OMNISIGNAL_WORKBENCH_DAILY_PILOT_CONFIG"))
+    from .auto_editorial import AutoEditorial
+    editorial=AutoEditorial(store,analysis,policy_path=os.getenv("OMNISIGNAL_WORKBENCH_AUTO_EDITORIAL_CONFIG"))
     enabled=start_worker if start_worker is not None else os.getenv("OMNISIGNAL_WORKBENCH_WORKER","false")=="true"
 
     @asynccontextmanager
@@ -101,6 +103,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
             worker=WorkbenchCollector(store)
             worker.start()
             analysis.start()
+            editorial.start()
             pilot.start()
             app.state.collector=worker
         try:
@@ -108,6 +111,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
         finally:
             if enabled:
                 pilot.stop()
+                editorial.stop()
                 analysis.stop()
             if worker:
                 worker.stop()
@@ -118,6 +122,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
     app.state.store=store
     app.state.collector=None
     app.state.daily_pilot=pilot
+    app.state.auto_editorial=editorial
     from .feed import router as feed_router
     app.include_router(feed_router(Path(os.getenv("OMNISIGNAL_KNOWLEDGE_DIR",str(store.root/"published")))))
 
@@ -335,6 +340,12 @@ def create_app(root=None, *, start_worker=None, frontend=None):
                 "budget":{"period":"day","timezone":"UTC","meaning":"每次 HTTP 请求（含失败、图片与 robots）预留一次；非账单估算"},
                 "sources":legacy_sources() if identity["role"]=="admin" else []}
 
+    @app.get(BASE+"/automation")
+    def automation(identity=Depends(auth.principal)):
+        from .acquisition import progress
+        return {"collection":progress(store), "editorial":editorial.status(),
+                "worker_enabled":bool(app.state.collector), "receipt_status":"unconfirmed"}
+
     @app.post(BASE+"/migration")
     def migrate(identity=Depends(auth.admin)):
         legacy=os.getenv("OMNISIGNAL_PREPARATION_DIR")
@@ -348,34 +359,18 @@ def create_app(root=None, *, start_worker=None, frontend=None):
 
     @app.post(BASE+"/publish")
     async def publish(request:Request,identity=Depends(auth.admin)):
-        from .publishing import publish_assets
+        from .publishing import publish_store_assets
         data=await body(request)
         ids=data.get("asset_ids")
         if not isinstance(ids,list) or not 1<=len(ids)<=50 or any(not isinstance(x,str) for x in ids) or len(ids)!=len(set(ids)):
             raise HTTPException(422,"请明确选择 1–50 张素材，不可重复")
-        # Keep one SQLite write transaction through preflight and signing; reviews
-        # cannot revoke permissions halfway through this snapshot.
         with store.db() as db:
-            db.execute("BEGIN IMMEDIATE")
-            selected=[]
-            for asset_id in ids:
-                row=db.execute("SELECT document FROM assets WHERE id=?",(asset_id,)).fetchone()
-                if not row:
-                    raise HTTPException(404,"选中的素材不存在")
-                item=json.loads(row[0]); item["image_path"]=str(store.images/item["image_file"])
-                selected.append(item)
-            try:
-                result=publish_assets(Path(os.getenv("OMNISIGNAL_KNOWLEDGE_DIR",str(store.root/"published"))),selected,identity["actor"])
-            except ValueError as exc:
-                raise HTTPException(409,str(exc)) from None
-            db.execute("INSERT OR IGNORE INTO releases VALUES(?,?,?)",(result["version"],encode(result),stamp()))
-            for item in selected:
-                item.pop("image_path",None)
-                item["publication_status"]="published"
-                item["publication_version"]=result["version"]
-                db.execute("UPDATE assets SET document=? WHERE id=?",(encode(item),item["id"]))
-            store.audit(db,result["version"],identity["actor"],"publish",{"assets":ids,"receipt_status":"unconfirmed"})
-        return result
+            if any(not db.execute("SELECT 1 FROM assets WHERE id=?",(asset_id,)).fetchone() for asset_id in ids):
+                raise HTTPException(404,"选中的素材不存在")
+        try:
+            return publish_store_assets(store,ids,identity["actor"])
+        except ValueError as exc:
+            raise HTTPException(409,str(exc)) from None
 
     @app.post(BASE+"/withdraw")
     async def withdraw(request:Request,identity=Depends(auth.admin)):

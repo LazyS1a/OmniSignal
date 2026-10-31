@@ -1,4 +1,4 @@
-"""Opt-in first-week scheduling; no collection, permission, review or publication writes."""
+"""Opt-in bounded daily scheduling; no collection, permission, review or publication writes."""
 from __future__ import annotations
 
 from collections import Counter, deque
@@ -14,10 +14,25 @@ import uuid
 
 from omnisignal.knowledge.release import KnowledgeError, _lock
 
+from .analysis import MAX_BATCH_ITEMS
+
 ACTOR = "system:daily-pilot"
 CONFIG_ENV = "OMNISIGNAL_WORKBENCH_DAILY_PILOT_CONFIG"
+# Default trial bounds; the persisted policy may widen them within MAX_TARGET
+# bounds so the scheduler is no longer tied to a single hardcoded week.
 FIRST_DAY, LAST_DAY = date(2026, 10, 27), date(2026, 11, 2)
-# This deliberately finite trial is entirely within Shanghai's UTC+08 period.
+MAX_HORIZON_DAYS = 730
+# 100 items is a per-request batch size, not an operating ceiling: plans are chunked
+# internally (MAX_BATCH_ITEMS per analysis batch), so a larger target is safe.
+MAX_TARGET = 2000
+# One day's plan never exceeds target/max-batch chunks; the bound keeps the
+# orphan scan deterministic without iterating an unbounded range.
+MAX_CHUNKS = (MAX_TARGET // MAX_BATCH_ITEMS) + 2
+# Retain the whole bounded operating window, including a daily policy's weekends.
+# Item identifiers can contain escaped Unicode, and appear in items and projects.
+MAX_STATE_FILES = MAX_HORIZON_DAYS + 1
+MAX_STATE_BYTES = 16000 + MAX_TARGET * 2048
+# Operating policies use Shanghai's fixed UTC+08 day boundary.
 SHANGHAI = timezone(timedelta(hours=8), "Asia/Shanghai")
 MAX_SCAN = 10000
 POLICY_KEYS = {"start_date", "end_date", "timezone", "weekdays", "hour", "minute",
@@ -60,13 +75,24 @@ def _json(path, maximum):
 
 def _policy(value):
     _check(isinstance(value, dict) and set(value) == POLICY_KEYS, "invalid_policy")
-    _check(value["start_date"] == FIRST_DAY.isoformat() and value["end_date"] == LAST_DAY.isoformat()
-           and value["timezone"] == "Asia/Shanghai", "invalid_policy")
-    _check(value["weekdays"] == [0, 1, 2, 3, 4]
-           and all(type(item) is int for item in value["weekdays"]), "invalid_policy")
+    # A wider window is an operational choice, not a contract violation: any
+    # bounded ISO range in the Shanghai day plane is accepted so the trial can be
+    # extended without a code change. It must contain no implicit drift.
+    _check(value["timezone"] == "Asia/Shanghai", "invalid_policy")
+    try:
+        start = date.fromisoformat(value["start_date"])
+        end = date.fromisoformat(value["end_date"])
+    except (TypeError, ValueError):
+        raise PilotError("invalid_policy") from None
+    _check(start <= end, "invalid_policy")
+    _check((end - start).days <= MAX_HORIZON_DAYS, "invalid_policy")
+    weekdays = value["weekdays"]
+    _check(isinstance(weekdays, list) and 1 <= len(weekdays) <= 7
+           and all(type(item) is int and 0 <= item <= 6 for item in weekdays)
+           and weekdays == sorted(set(weekdays)), "invalid_policy")
     _check(type(value["hour"]) is int and value["hour"] == 16
            and type(value["minute"]) is int and value["minute"] == 0, "invalid_policy")
-    _check(type(value["target"]) is int and 1 <= value["target"] <= 100, "invalid_policy")
+    _check(type(value["target"]) is int and 1 <= value["target"] <= MAX_TARGET, "invalid_policy")
     _check(type(value["review_target_min"]) is int and value["review_target_min"] == 10
            and type(value["review_target_max"]) is int and value["review_target_max"] == 20, "invalid_policy")
     return deepcopy(value)
@@ -120,21 +146,26 @@ class DailyPilot:
     def _read_states(self):
         states = {}
         files = list(self.root.glob("intent-*.json"))
-        _check(len(files) <= 7)
+        _check(len(files) <= MAX_STATE_FILES)
         for path in files:
-            value = _json(path, 128000)
+            value = _json(path, MAX_STATE_BYTES)
             _check(isinstance(value, dict) and set(value) == STATE_KEYS)
             _check(value["checksum"] == _hash({k: v for k, v in value.items() if k != "checksum"}))
             day = date.fromisoformat(value["day"])
-            _check(FIRST_DAY <= day <= LAST_DAY and day.weekday() < 5)
+            stored = _policy(value["policy"])
+            _check(date.fromisoformat(stored["start_date"]) <= day <= date.fromisoformat(stored["end_date"])
+                   and day.weekday() in stored["weekdays"])
             _check(path.name == "intent-" + day.isoformat() + ".json")
             _check(value["version"] == 1 and type(value["version"]) is int and value["actor"] == ACTOR)
             _check(value["request_id"] == _request(value["day"]))
-            policy = _policy(value["policy"])
+            policy = stored
             items = value["items"]
             _check(isinstance(items, list) and len(items) <= policy["target"])
             if items:
-                _check(self.analysis.batch_items(items) == items)
+                for offset in range(0, len(items), MAX_BATCH_ITEMS):
+                    chunk = items[offset:offset + MAX_BATCH_ITEMS]
+                    _check(self.analysis.batch_items(chunk) == chunk)
+                _check(len({item["asset_id"] for item in items}) == len(items))
             _check(isinstance(value["projects"], dict) and set(value["projects"]) == {i["asset_id"] for i in items})
             _check(all(isinstance(v, str) and len(v) == 64 for v in value["projects"].values()))
             preview = value["preview"]
@@ -172,8 +203,8 @@ class DailyPilot:
             if group:
                 queue.append(group)
         items, skipped, examined = [], Counter(), 0
-        for offset in range(0, len(order), 100):
-            preview = self.analysis.preview_batch(order[offset:offset + 100])
+        for offset in range(0, len(order), MAX_BATCH_ITEMS):
+            preview = self.analysis.preview_batch(order[offset:offset + MAX_BATCH_ITEMS])
             for item in preview["items"]:
                 examined += 1
                 if item["disposition"] == "eligible":
@@ -197,6 +228,39 @@ class DailyPilot:
             return self.analysis.batch(state["request_id"], ACTOR)
         except Exception:
             raise PilotError("batch_lookup_failed") from None
+
+    def _chunks(self, state):
+        ids = self._chunk_ids(state["day"])
+        return [(ids[index], state["items"][offset:offset + MAX_BATCH_ITEMS])
+                for index, offset in enumerate(range(0, len(state["items"]), MAX_BATCH_ITEMS))]
+
+    def _read_batches(self, state):
+        batches = []
+        for request_id, expected in self._chunks(state):
+            batch = self._batch({"request_id": request_id})
+            if batch is not None:
+                # A durable receipt is not enough: it must describe this exact
+                # frozen chunk, including skipped items and their revisions.
+                actual = [{key: item.get(key) for key in ("asset_id", "expected_revision")}
+                          for item in batch.get("items", [])]
+                _check(batch.get("batch_id") == uuid.UUID(request_id).hex and actual == expected,
+                       "batch_payload_mismatch")
+            batches.append(batch)
+        return batches
+
+    @staticmethod
+    def _combined(state, batches):
+        present = [batch for batch in batches if batch is not None]
+        if not present:
+            return None
+        totals = Counter()
+        for batch in present:
+            totals.update(batch["totals"])
+        complete = len(present) == len(batches)
+        status = ("running" if totals["queued"] + totals["running"] else "finished") if complete else (
+            "expired_intent" if state["phase"] == "expired" else "submission_uncertain")
+        return {"batch_id": present[0]["batch_id"], "state": status, "totals": dict(totals),
+                "items": [item for batch in present for item in batch["items"]]}
 
     def _report(self, state, batch, now):
         totals = batch["totals"] if batch else {}
@@ -233,28 +297,74 @@ class DailyPilot:
         _atomic(self.root / ("report-" + state["day"] + ".json"), report)
         return report
 
+    def _enqueue_missing(self, state, batches):
+        """Only absent receipts are submitted, using the original frozen IDs.
+
+        A lost response stops this pass. Reconciliation reads the receipts before
+        any later pass can submit the remaining chunks; existing jobs never retry.
+        """
+        for (request_id, chunk), batch in zip(self._chunks(state), batches):
+            if batch is None:
+                self.analysis.enqueue_batch(request_id, chunk, ACTOR)
+
+    @staticmethod
+    def _chunk_ids(day):
+        """Deterministic batch ids for one day; chunk 0 keeps the legacy id."""
+        head = _request(day)
+        return [head] + [
+            str(uuid.uuid5(uuid.NAMESPACE_URL,
+                           "urn:omnisignal:daily-pilot:chunk:%s:%d" % (day, index)))
+            for index in range(1, MAX_CHUNKS)]
+
     def _reconcile(self, state, now, allow_submit):
-        batch = self._batch(state) if state["items"] else None
-        if batch is None and state["phase"] == "observed":
+        batches = self._read_batches(state)
+        complete = all(batch is not None for batch in batches)
+        if not complete and state["phase"] == "observed":
             raise PilotError("observed_batch_missing")
-        if batch is None and state["phase"] == "prepared":
+        if not complete and state["phase"] == "prepared":
             if allow_submit:
                 try:
-                    batch = self.analysis.enqueue_batch(state["request_id"], state["items"], ACTOR)
+                    self._enqueue_missing(state, batches)
                 except Exception:
-                    # Lost response after a durable commit: retry only the read
-                    # here. A later tick may replay exactly the persisted intent.
-                    batch = self._batch(state)
-                    if batch is None:
-                        self._report(state, None, now)
+                    # The receipt may already exist. Read all chunks; never make
+                    # a second submission from this exception path.
+                    batches = self._read_batches(state)
+                    if any(batch is None for batch in batches):
+                        report = self._report(state, self._combined(state, batches), now)
+                        if state["day"] == now.date().isoformat():
+                            self._view["report"] = report
                         raise PilotError("submission_uncertain") from None
+                else:
+                    batches = self._read_batches(state)
+                    if any(batch is None for batch in batches):
+                        report = self._report(state, self._combined(state, batches), now)
+                        if state["day"] == now.date().isoformat():
+                            self._view["report"] = report
+                        raise PilotError("submission_uncertain")
             elif state["day"] < now.date().isoformat():
                 state["phase"] = "expired"
                 self._save(state)
-        if batch is not None and state["phase"] != "observed":
+        if batches and all(batch is not None for batch in batches) and state["phase"] == "prepared":
             state["phase"] = "observed"
             self._save(state)
-        return self._report(state, batch, now)
+        return self._report(state, self._combined(state, batches), now)
+
+    def _check_orphans(self, start_day, day, states):
+        # A missing intent must not silently become a new selection. Check the
+        # entire bounded date range, including days enabled by an earlier policy.
+        # A few indexed SQL reads avoid opening thousands of batch connections
+        # when an operator first starts a long-running policy late in its window.
+        ids = []
+        for offset in range((day - start_day).days + 1):
+            candidate = start_day + timedelta(days=offset)
+            if candidate.isoformat() not in states:
+                ids.extend(uuid.UUID(value).hex for value in self._chunk_ids(candidate.isoformat()))
+        with self.store.db() as db:
+            for offset in range(0, len(ids), 500):
+                chunk = ids[offset:offset + 500]
+                found = db.execute("SELECT 1 FROM analysis_batches WHERE actor=? AND id IN ("
+                                   + ",".join("?" for _ in chunk) + ") LIMIT 1", (ACTOR, *chunk)).fetchone()
+                _check(found is None, "batch_without_intent")
 
     def tick(self, now=None):
         with self._guard:
@@ -280,7 +390,10 @@ class DailyPilot:
                     except Exception:
                         raise PilotError("invalid_state") from None
                     day = now.date()
-                    allowed = FIRST_DAY <= day <= LAST_DAY and day.weekday() in policy["weekdays"] and (now.hour, now.minute) >= (policy["hour"], policy["minute"])
+                    start_day = date.fromisoformat(policy["start_date"])
+                    end_day = date.fromisoformat(policy["end_date"])
+                    hour_ok = (now.hour, now.minute) >= (policy["hour"], policy["minute"])
+                    allowed = start_day <= day <= end_day and day.weekday() in policy["weekdays"] and hour_ok
                     reports = []
                     # Recover every persisted intent before creating today's.
                     for key, state in sorted(states.items()):
@@ -289,18 +402,12 @@ class DailyPilot:
                             _check(state["policy"] == policy, "policy_changed_after_intent")
                         reports.append(self._reconcile(state, now, allowed and key == day.isoformat()))
                     if allowed and day.isoformat() not in states:
-                        # If a file was lost, the deterministic batch ID must not
-                        # silently become a second, differently selected request.
-                        for offset in range(7):
-                            candidate = FIRST_DAY + timedelta(days=offset)
-                            if candidate <= day and candidate.weekday() < 5 and candidate.isoformat() not in states:
-                                orphan = self._batch({"request_id": _request(candidate.isoformat())})
-                                _check(orphan is None, "batch_without_intent")
+                        self._check_orphans(start_day, day, states)
                         state = self._plan(policy, now)
                         self._save(state)
                         reports.append(self._reconcile(state, now, True))
                     current = next((r for r in reports if r["day"] == day.isoformat()), None)
-                    status = "ended" if day > LAST_DAY else "before_period" if day < FIRST_DAY else "weekend" if day.weekday() not in policy["weekdays"] else current["state"] if current else "waiting_window"
+                    status = "ended" if day > end_day else "before_period" if day < start_day else "weekend" if day.weekday() not in policy["weekdays"] else current["state"] if current else "waiting_window"
                     self._view.update(state=status, report=current, recent=list(reversed(reports)))
             except PilotError as error:
                 self._view.update(state="blocked", diagnostic=str(error))

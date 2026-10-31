@@ -124,7 +124,7 @@ def test_explicit_limits_bound_successful_projects(tmp_path, monkeypatch, config
     assert all(set(item["permissions"].values()) == {"unknown"} for item in store.list_assets(status="all", page_size=60)["items"])
 
 
-@pytest.mark.parametrize("configured", ["", "0", "-1", "11", "9999", "unlimited", "2.0", "+2", "02", " 10 ", "True", "１０"])
+@pytest.mark.parametrize("configured", ["", "0", "-1", "101", "9999", "unlimited", "2.0", "+2", "02", " 10 ", "True", "１０"])
 def test_invalid_configuration_strictly_falls_back_to_two(tmp_path, monkeypatch, configured):
     monkeypatch.setenv(LIMIT_ENV, configured)
     network = SyntheticSource()
