@@ -22,7 +22,7 @@ from omnisignal.knowledge.design_collection import FetchError, PublicFetcher, US
 from omnisignal.knowledge.design_sources import SOURCES, canonical_url, discover, extract_article
 from omnisignal.workbench import ad_source, potw_source
 from omnisignal.workbench.potw_transport import POTWTransport
-from omnisignal.workbench.acquisition import ArchiveCursor, ProjectProgress, daily_target, progress
+from omnisignal.workbench.acquisition import ArchiveCursor, ProjectProgress, ProjectRetry, daily_target, progress
 
 SOURCE_CONFIGS = {**SOURCES, "adsofbrands": ad_source.CONFIG, "potw": potw_source.CONFIG}
 
@@ -318,24 +318,35 @@ class WorkbenchCollector:
             raw_project_limit = os.getenv("OMNISIGNAL_WORKBENCH_COLLECTION_PROJECT_LIMIT", "2")
             project_limit = int(raw_project_limit) if raw_project_limit in {str(n) for n in range(1, 101)} else 2
             attempt_limit = max(6, project_limit * 3)
-            page_url = None
+            page_url, visited_pages = None, set()
             # Always check fresh listing first, then at most three advertised
             # archive pages. HTTP allowance and crawl-delay still apply to all.
             for page_number in range(4 if target else 1):
-                bounded = False
+                bounded, unresolved = False, False
                 for url in urls:
                     identity = project_id(site, url)
                     receipt = ProjectProgress(self.store, site, identity) if target else None
-                    if (receipt.complete if receipt else identity in known) or identity in seen:
+                    if (receipt.complete if receipt else identity in known):
+                        continue
+                    retry = ProjectRetry(self.store, identity) if target else None
+                    if retry and retry.deferred:
+                        unresolved = True
+                        skipped += 1
+                        continue
+                    if identity in seen:
                         continue
                     if projects >= project_limit or attempts >= attempt_limit or (target and progress(self.store)["remaining"] == 0):
                         bounded = True
                         break
                     seen.add(identity)
                     attempts += 1
+                    phase = "article_parse"
                     try:
+                        if retry and retry.state and receipt:
+                            receipt.retry_images()
                         raw = fetcher.get(url)
                         article = _extract(site, raw, url)
+                        phase = "asset_ingest"
                         hashes, image_count = set(), receipt.valid_count if receipt else 0
                         planned = [c for c in article["candidates"][:6]]
                         for position, candidate in enumerate(planned, start=1):
@@ -361,23 +372,34 @@ class WorkbenchCollector:
                             imported += int(result["created"])
                             if receipt:
                                 receipt.record(candidate["url"], True)
+                        if not image_count:
+                            phase = "no_usable_images"
+                            raise ValueError("no_usable_images")
                         if receipt and not bounded:
                             receipt.finish()
-                        if not image_count:
-                            raise ValueError("no_usable_images")
+                        if retry:
+                            retry.clear()
                         projects += 1
-                    except ValueError:
+                    except ValueError as error:
                         skipped += 1
+                        unresolved = True
+                        if retry:
+                            reason_code = str(error) if str(error) in ProjectRetry.REASONS else phase
+                            retry.fail(reason_code)
                 if not cursor or bounded:
                     break
                 if page_url:
-                    cursor.complete(page_url)
-                page_url = cursor.next()
+                    if unresolved:
+                        cursor.defer(page_url)
+                    else:
+                        cursor.complete(page_url)
+                page_url = cursor.next(excluding=visited_pages)
                 if not page_url or page_number == 3 or projects >= project_limit or attempts >= attempt_limit:
                     break
                 # Only persisted, same-site pagination discovered from a page
                 # may be followed. Fetcher rechecks host, robots and budgets.
                 page = fetcher.get(page_url)
+                visited_pages.add(page_url)
                 cursor.observe(page, page_url)
                 urls = (potw_source.discover(page, page_url) if site == "potw" else
                         ad_source.discover(page) if site == "adsofbrands" else discover(site, page))

@@ -121,8 +121,17 @@ class ArchiveCursor:
             self._refreshed = True
         self.save()
 
-    def next(self):
-        return self.state["pending"][0] if self.state["pending"] else None
+    def next(self, excluding=()):
+        return next((url for url in self.state["pending"] if url not in excluding), None)
+
+    def defer(self, url):
+        # A page with temporarily failed projects remains pending. Rotate it
+        # only after considering its candidates, so another pending page gets
+        # a turn without losing interrupted, not-yet-considered work.
+        if url in self.state["pending"]:
+            self.state["pending"].remove(url)
+            self.state["pending"].append(url)
+            self.save()
 
     def complete(self, url):
         if url in self.state["pending"]:
@@ -172,3 +181,60 @@ class ProjectProgress:
     def finish(self):
         self.state["complete"] = True
         self.save()
+
+    def retry_images(self):
+        # A previous all-invalid response might have been temporary. Only a
+        # due failed project retries these URLs, using the normal HTTP budget.
+        self.state["rejected"] = []
+        self.save()
+
+
+class ProjectRetry:
+    """Bounded revisit of parse failures, never a permanent completion mark.
+
+    This applies only to source collection. Model jobs and their no-automatic-
+    retry contract are unrelated. FetchError (robots, pause, HTTP rejection,
+    budget) does not enter this receipt.
+    """
+    REASONS = frozenset({
+        "article_parse", "asset_ingest", "no_usable_images",
+        "outside_ad_project_scope", "ad_project_structure_changed", "ad_project_text_missing",
+        "ad_project_text_out_of_bounds", "unsupported_ad_media_type", "ad_project_images_missing",
+        "outside_project_scope", "project_structure_changed", "project_title_missing",
+        "project_title_out_of_bounds", "project_text_out_of_bounds", "project_images_missing",
+    })
+
+    def __init__(self, store, project_id):
+        self.store = store
+        self.key = "collection.project-retry.v1:" + project_id
+        with store.db() as db:
+            row = db.execute("SELECT value FROM meta WHERE key=?", (self.key,)).fetchone()
+        self.state = json.loads(row[0]) if row else None
+        value = self.state
+        if value is not None and (not isinstance(value, dict) or set(value) != {"failures", "reason_code", "last_attempt_at", "next_attempt_at"}
+                or type(value["failures"]) is not int or not 1 <= value["failures"] <= 1000
+                or not isinstance(value["reason_code"], str) or value["reason_code"] not in self.REASONS
+                or any(type(value[k]) not in (int, float) or not math.isfinite(value[k]) or value[k] < 0 for k in ("last_attempt_at", "next_attempt_at"))
+                or not 0 < value["next_attempt_at"] - value["last_attempt_at"] <= 7 * 86400):
+            raise ValueError("invalid_project_retry")
+
+    @property
+    def deferred(self):
+        return bool(self.state and self.store.clock() < self.state["next_attempt_at"])
+
+    def fail(self, reason):
+        if reason not in self.REASONS:
+            raise ValueError("invalid_project_retry_reason")
+        failures = min(1000, self.state["failures"] + 1 if self.state else 1)
+        now = self.store.clock()
+        self.state = {"failures": failures, "reason_code": reason, "last_attempt_at": now,
+                      "next_attempt_at": now + min(7, 2 ** min(failures - 1, 3)) * 86400}
+        with self.store.db() as db:
+            db.execute("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (self.key, json.dumps(self.state, separators=(",", ":"))))
+
+    def clear(self):
+        if self.state is not None:
+            with self.store.db() as db:
+                db.execute("DELETE FROM meta WHERE key=?", (self.key,))
+            self.state = None

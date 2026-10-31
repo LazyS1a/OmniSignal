@@ -31,6 +31,38 @@ DESIGN_FIELDS = {"palette", "typography", "composition", "hierarchy", "imagery",
                  "reusable_ideas", "applicability", "limitations"}
 ANALYSIS_PROJECTION_FIELDS = {"analysis_status", "analysis_job_id", "analysis_suggestion", "analysis_suggestion_revision"}
 
+# Only these fixed messages/codes may cross the provider boundary into storage.
+# Keep the code in the existing reason field; old rows need no schema migration.
+FAILURE_MESSAGES = {
+    "upstream_authentication": "模型请求失败：上游认证或授权未通过（HTTP 401/403）",
+    "upstream_rate_limited": "模型请求失败：上游限制请求频率（HTTP 429）",
+    "upstream_server_error": "模型请求失败：上游服务异常（HTTP 5xx）",
+    "upstream_http_error": "模型请求失败：上游返回其他异常 HTTP 状态",
+    "upstream_timeout": "模型请求失败：等待上游响应超时",
+    "upstream_network": "模型请求失败：与上游的网络连接异常",
+    "response_too_large": "模型请求失败：返回内容超过大小限制",
+    "response_json_parse": "模型返回格式不合格：JSON 无法解析",
+    "response_schema_invalid": "模型返回字段或逐图分类未通过校验",
+    "unknown_error": "模型分析失败：未能安全识别具体原因",
+}
+FAILURE_REASONS = {code: f"[{code}] {message}；本次请求已记录，不会自动重试。"
+                   for code, message in FAILURE_MESSAGES.items()}
+
+
+class AnalysisFailure(Conflict):
+    """Fixed failure metadata only; never retain an upstream body or exception text."""
+    def __init__(self, code):
+        self.code = code if code in FAILURE_REASONS else "unknown_error"
+        super().__init__(FAILURE_REASONS[self.code])
+
+
+def failure_fields(reason):
+    """Expose a separate code and readable message without reclassifying old rows."""
+    for code, stored in FAILURE_REASONS.items():
+        if reason == stored:
+            return code, stored.removeprefix(f"[{code}] ")
+    return None, reason
+
 
 def analysis_input_binding(asset):
     """Bind all persisted editorial input, excluding only analysis projections."""
@@ -156,8 +188,8 @@ class HTTPAnalysisProvider:
         content = self._fetch(body)
         try:
             return json.loads(content)
-        except (ValueError, TypeError):
-            raise Conflict("模型返回格式不合格；本次请求额度已计入，需明确确认后重试") from None
+        except (ValueError, TypeError, RecursionError):
+            raise AnalysisFailure("response_json_parse") from None
 
     def _fetch(self, body):
         """Return the assistant content string; raise Conflict on transport refusal."""
@@ -170,17 +202,33 @@ class HTTPAnalysisProvider:
                     data = bytearray()
                     for chunk in response.iter_bytes():
                         data.extend(chunk)
-                        require(len(data) <= MAX_RESPONSE_BYTES, "模型返回超出大小限制")
-        except Conflict:
-            # Oversized or otherwise refused response: same single-shot refusal path.
-            raise Conflict("模型请求失败；请求额度已计入，需人工确认后重试") from None
+                        if len(data) > MAX_RESPONSE_BYTES:
+                            raise AnalysisFailure("response_too_large")
+        except AnalysisFailure:
+            raise
+        except httpx.HTTPStatusError as error:
+            status = error.response.status_code
+            code = ("upstream_authentication" if status in {401, 403} else
+                    "upstream_rate_limited" if status == 429 else
+                    "upstream_server_error" if 500 <= status <= 599 else "upstream_http_error")
+            raise AnalysisFailure(code) from None
+        except httpx.TimeoutException:
+            raise AnalysisFailure("upstream_timeout") from None
+        except httpx.RequestError:
+            raise AnalysisFailure("upstream_network") from None
         except Exception:
-            # A redirect hop or a transport refusal cannot succeed on retry.
-            raise Conflict("模型请求失败；请求额度已计入，需人工确认后重试") from None
+            raise AnalysisFailure("unknown_error") from None
         try:
-            return json.loads(data)["choices"][0]["message"]["content"]
-        except (ValueError, KeyError, IndexError, TypeError):
-            raise Conflict("模型返回格式不合格；本次请求额度已计入，需明确确认后重试") from None
+            payload = json.loads(data)
+        except (ValueError, TypeError, RecursionError):
+            raise AnalysisFailure("response_json_parse") from None
+        try:
+            content = payload["choices"][0]["message"]["content"]
+            if not isinstance(content, str):
+                raise AnalysisFailure("response_schema_invalid")
+            return content
+        except (KeyError, IndexError, TypeError):
+            raise AnalysisFailure("response_schema_invalid") from None
 
 
 class AnalysisService:
@@ -364,7 +412,7 @@ class AnalysisService:
                 if row:
                     item.update(status=row["status"], charged=bool(row["charged"]))
                     if row["reason"]:
-                        item["reason"] = row["reason"]
+                        item["failure_code"], item["reason"] = failure_fields(row["reason"])
                 else:
                     item.update(status="interrupted", reason="任务记录已不可用，请联系管理员核查")
             totals["requested"] += 1
@@ -445,6 +493,7 @@ class AnalysisService:
         value.pop("projection_evidence", None)
         value["suggestion"] = json.loads(value["suggestion"]) if value.get("suggestion") else None
         value["charged"] = bool(value["charged"])
+        value["failure_code"], value["reason"] = failure_fields(value.get("reason"))
         return value
 
     def jobs(self, asset_id=None):
@@ -617,7 +666,10 @@ class AnalysisService:
                 with self.store.db() as receipt_db:
                     receipt_db.execute("UPDATE analysis_jobs SET remote_job_id=? WHERE id=?", (remote_id, job["id"]))
             output = self.provider.analyze(context, image, receipt=receipt) if getattr(self.provider, "is_nova", False) else self.provider.analyze(context, image)
-            suggestion = _result(output, asset["id"], require_taxonomy=getattr(self.provider, "requires_taxonomy", False))
+            try:
+                suggestion = _result(output, asset["id"], require_taxonomy=getattr(self.provider, "requires_taxonomy", False))
+            except (Conflict, KeyError, TypeError, ValueError, RecursionError):
+                raise AnalysisFailure("response_schema_invalid") from None
             suggestion["model_version"] = self.provider.model_version
             status, reason = "completed", "分析建议已保存，需人工复核"
         except Exception as exc:
@@ -625,7 +677,8 @@ class AnalysisService:
             if isinstance(exc, NovaPending):
                 suggestion, status, reason = None, "waiting_remote", "等待 Nova 原任务结果，后台只读同步，不会重新提交或扣除新额度"
             else:
-                suggestion, status, reason = None, "failed", "分析失败或模型返回不合格；请求额度已计入，需人工确认后重试"
+                code = exc.code if isinstance(exc, AnalysisFailure) else "unknown_error"
+                suggestion, status, reason = None, "failed", FAILURE_REASONS.get(code, FAILURE_REASONS["unknown_error"])
         with self.store.db() as db:
             db.execute("BEGIN IMMEDIATE")
             if status == "waiting_remote":

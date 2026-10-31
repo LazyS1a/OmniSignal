@@ -13,7 +13,7 @@ from PIL import Image
 import pytest
 
 from omnisignal.knowledge.release import materialize_release, read_latest, verify_release
-from omnisignal.workbench.analysis import AnalysisService, HTTPAnalysisProvider, _result
+from omnisignal.workbench.analysis import AnalysisFailure, AnalysisService, HTTPAnalysisProvider, _result
 from omnisignal.workbench.auto_editorial import ACTOR, AutoEditorial
 from omnisignal.workbench.publishing import publish_assets, publication_snapshot_ids, publish_store_assets, withdraw_assets
 from omnisignal.workbench.review import apply_automated_review, fresh_review
@@ -317,10 +317,13 @@ def test_current_qwen_requires_strict_taxonomy_and_malformed_json_is_single_bill
     invalid = deepcopy(SUGGESTION); invalid["taxonomy"]["tags"]["medium"] = ["website-guessed"]
     with pytest.raises(Conflict, match="字典"):
         _result(invalid, "synthetic", require_taxonomy=True)
-    for response in [httpx.Response(200, json={"choices": [{"message": {"content": "{"}}]}), httpx.Response(200, json={})]:
+    for response, expected_code in [
+        (httpx.Response(200, json={"choices": [{"message": {"content": "{"}}]}), "response_json_parse"),
+        (httpx.Response(200, json={}), "response_schema_invalid"),
+    ]:
         calls = []
         def transport(request): calls.append(request); return response
         provider = HTTPAnalysisProvider(api_key="synthetic-only", model="qwen-synthetic-offline", transport=httpx.MockTransport(transport))
-        with pytest.raises(Conflict, match="格式不合格"):
+        with pytest.raises(AnalysisFailure) as failed:
             provider.analyze({"id": "synthetic", "title": "合成"}, b"synthetic-only")
-        assert len(calls) == 1
+        assert failed.value.code == expected_code and len(calls) == 1
