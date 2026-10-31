@@ -218,6 +218,23 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
   check(!await modal.getByRole('checkbox', { name: '我已逐项核对摘要、设计分析与依据类型，确认本次保存为人工审核版', exact: true }).isChecked(), 'assistant-content-is-not-implicitly-human-confirmed');
   await page.screenshot({ path: path.join(results, '08-assistant-provenance.png'), fullPage: true });
   await modal.getByRole('button', { name: '关闭', exact: true }).click();
+  // Read-only response fixture tests the model provenance label only. It does
+  // not persist an AI review, call a model, or claim provider acceptance.
+  const automatedRoute = `${base}/workbench/api/assets/${reference.id}`;
+  await page.route(automatedRoute, async route => {
+   check(route.request().method() === 'GET', 'automated-provenance-fixture-is-read-only');
+   const response = await route.fetch();
+   const data = await response.json();
+   data.reviewed_analysis = { ...data.reviewed_analysis, provenance: 'model_automated_review', model_version: 'synthetic-ui-model' };
+   await route.fulfill({ response, json: data });
+  });
+  await page.getByRole('heading', { name: title, exact: true }).click();
+  modal = page.getByRole('dialog');
+  await modal.locator('summary').filter({ hasText: '自动 AI 复核的设计分析' }).click();
+  check(await modal.getByText('AI 已复核 · 待人工确认', { exact: true }).isVisible() && await modal.getByText(/自动 AI 复核（synthetic-ui-model），未经人工逐项复核/).isVisible(), 'automated-origin-title-and-body-never-claim-human-review');
+  check(await modal.locator('summary').filter({ hasText: '人工审阅的设计分析' }).count() === 0 && !await modal.getByRole('checkbox', { name: '我已逐项核对摘要、设计分析与依据类型，确认本次保存为人工审核版', exact: true }).isChecked(), 'automatic-review-does-not-preconfirm-human-review');
+  await modal.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.unroute(automatedRoute);
  }
 
  await page.getByRole('button', { name: '采集', exact: true }).click();

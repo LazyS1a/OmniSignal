@@ -14,7 +14,9 @@ import uuid
 
 from omnisignal.knowledge.release import KnowledgeError, _lock
 
-from .analysis import MAX_BATCH_ITEMS
+from .analysis import MAX_BATCH_ITEMS, job_asset_revision
+from .review import fresh_review
+from .store import Conflict, asset_row_consistent
 
 ACTOR = "system:daily-pilot"
 CONFIG_ENV = "OMNISIGNAL_WORKBENCH_DAILY_PILOT_CONFIG"
@@ -274,11 +276,25 @@ class DailyPilot:
         review_pending = 0
         with self.store.db() as db:
             for item in completed_items:
-                row = db.execute("SELECT document FROM assets WHERE id=?", (item["asset_id"],)).fetchone()
-                asset = json.loads(row[0]) if row else {}
-                if (asset.get("status") == "pending" and asset.get("revision") == item["expected_revision"]
-                        and asset.get("analysis_suggestion_revision") == item["expected_revision"]
-                        and (asset.get("reviewed_analysis") or {}).get("source_job_id") != item["job_id"]):
+                row = db.execute("SELECT * FROM assets WHERE id=?", (item["asset_id"],)).fetchone()
+                if not asset_row_consistent(row):
+                    continue
+                asset = json.loads(row["document"])
+                try:
+                    review = fresh_review(asset)
+                except (Conflict, KeyError, TypeError):
+                    review = None
+                if (asset["status"] in {"pending", "accepted"} and review
+                        and review.get("provenance") == "model_automated_review"
+                        and review.get("source_job_id") == item["job_id"]):
+                    # Automated acceptance is still not a human review.
+                    review_pending += 1
+                    continue
+                job = db.execute("SELECT * FROM analysis_jobs WHERE id=?", (item["job_id"],)).fetchone()
+                source_revision = job_asset_revision(dict(job)) if job else item["expected_revision"]
+                if (asset["status"] == "pending" and asset["revision"] == source_revision
+                        and asset.get("analysis_suggestion_revision") == source_revision
+                        and not review):
                     review_pending += 1
         phase = batch["state"] if batch else "no_eligible" if not state["items"] else "expired_intent" if state["phase"] == "expired" else "submission_uncertain"
         report = {"day": state["day"], "state": phase, "batch_id": batch["batch_id"] if batch else None,

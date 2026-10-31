@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 
-from .store import Conflict, encode, require, stamp
+from .store import Conflict, asset_from_row, asset_row_consistent, encode, require, stamp
 
 
 DESIGN_FIELDS = (
@@ -48,17 +48,19 @@ def validated_content(payload):
 
 
 def completed_source_job(db, asset, job_id):
+    stored = db.execute("SELECT * FROM assets WHERE id=?", (asset["id"],)).fetchone()
+    if (not asset_row_consistent(stored) or stored["revision"] != asset["revision"]
+            or json.loads(stored["document"]).get("sha256") != asset.get("sha256")):
+        return None
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_jobs'").fetchone():
         return None
     row = db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job_id,)).fetchone()
     if row is None:
         return None
     job = dict(row)
-    if (job["asset_id"] != asset["id"] or job["revision"] != asset["revision"]
-            or job["status"] != "completed"):
-        return None
-    expected_cache = hashlib.sha256(encode([asset["id"], asset["revision"], asset["sha256"], job["provider"]]).encode()).hexdigest()
-    if job["cache_key"] != expected_cache:
+    from .analysis import job_matches_asset
+    # Derived UI fields/audit are not part of the persisted model input.
+    if job["status"] != "completed" or not job_matches_asset(job, json.loads(stored["document"])):
         return None
     try:
         suggestion = json.loads(job["suggestion"])
@@ -149,9 +151,9 @@ def apply_automated_review(store, asset_id, expected_revision, job_id, actor="sy
     require(actor == "system:auto-editorial", "invalid_automated_actor")
     with store.db() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT document FROM assets WHERE id=?", (asset_id,)).fetchone()
+        row = db.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
         require(row is not None, "missing_asset")
-        asset = json.loads(row[0])
+        asset = asset_from_row(row, strict=True)
         require(type(expected_revision) is int and asset["revision"] == expected_revision, "revision_changed")
         job, suggestion, taxonomy = automated_candidate(db, asset, job_id)
         path = store.images / asset["image_file"]

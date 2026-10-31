@@ -25,7 +25,7 @@ export default function ReviewedAnalysisForm({ asset, value, confirmed, onChange
  const status = asset.reviewed_analysis_status || 'none';
  const assistantReview = asset.reviewed_analysis?.provenance === 'assistant_editorial_review';
  const automatedReview = asset.reviewed_analysis?.provenance === 'model_automated_review';
- return <details className="detail-section reviewed-analysis-section"><summary>{assistantReview ? '助手整理的设计分析' : '人工审阅的设计分析'} <span className={`review-status ${status}`}>{status === 'current' ? (assistantReview ? '已整理 · 当前版本' : '已审核 · 当前版本') : status === 'stale' ? '已过期 · 需要重审' : '尚未审核'}</span></summary>
+ return <details className="detail-section reviewed-analysis-section"><summary>{automatedReview ? '自动 AI 复核的设计分析' : assistantReview ? '助手整理的设计分析' : '人工审阅的设计分析'} <span className={`review-status ${status}`}>{status === 'current' ? (automatedReview ? 'AI 已复核 · 待人工确认' : assistantReview ? '已整理 · 当前版本' : '已审核 · 当前版本') : status === 'stale' ? '已过期 · 需要重审' : '尚未审核'}</span></summary>
   <p className="muted">下面的内容由你核对后保存为审核版。可以独立编写，也可以先采用有效模型建议；仅采用建议不会完成审核。</p>
   {asset.reviewed_analysis && <p className="review-provenance">上次记录：{asset.reviewed_analysis.reviewed_by} · {dateLabel(asset.reviewed_analysis.reviewed_at)} · 版本 {asset.reviewed_analysis.revision}{automatedReview ? ` · 自动 AI 复核（${asset.reviewed_analysis.model_version || '模型未记录'}），未经人工逐项复核` : assistantReview ? ' · AI 助手整理，未经人工逐项复核' : asset.reviewed_analysis.model_version && asset.reviewed_analysis.model_version !== 'none' ? ` · 辅助模型 ${asset.reviewed_analysis.model_version}` : ' · 独立人工审阅'}</p>}
   {status === 'stale' && <p className="analysis-error">素材在上次审核后发生了修改。这份旧分析不能作为当前发布依据，请逐项核对后重新确认。</p>}

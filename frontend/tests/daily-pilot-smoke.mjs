@@ -75,6 +75,7 @@ try {
  await automation.locator('dd').nth(1).filter({hasText:/^0$/}).waitFor();
  check(JSON.stringify(await automation.locator('dd').allTextContents()) === JSON.stringify(['—','0','0','0']), 'automation-shows-real-empty-collection-and-ai-counts');
  check((await automation.textContent()).includes('AI 复核与人工审核分别记录'), 'automatic-review-not-counted-as-human');
+ check((await automation.textContent()).includes('展示和同步仍逐批确认'), 'disabled-publication-explains-required-batch-confirmation');
  const refresh = page.getByRole('button', { name: '刷新每日试运行状态', exact: true });
  await card.getByText('等待今日运行时间', { exact: true }).waitFor();
  check(await card.getByText('周一至周五 · 北京时间 16:00 · 试点至 11月2日', { exact: true }).count() === 1, 'schedule-explicit-shanghai-weekdays-end-date');

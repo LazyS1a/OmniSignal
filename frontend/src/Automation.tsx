@@ -42,6 +42,6 @@ export default function Automation({ revision }: { revision: number }) {
   ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{typeof value === 'number' ? value : '—'}</dd></div>)}</dl>
   {!!data?.collection.remaining && <p className="daily-pilot-note">今天距采集目标还差 {data.collection.remaining} 张。来源供给不足、站点限流或请求预算用完都会留下实际缺口。</p>}
   {!!today?.permission_blocked && <p className="daily-pilot-warning">{today.permission_blocked} 张尚未记录内部展示或传输依据，暂不发布到 DeepFlare。</p>}
-  <p className="daily-pilot-note">{data?.editorial.auto_publish ? '符合条件的素材自动生成带出处的知识包；DeepFlare 拉取并校验后显示。' : '当前未启用自动发布。'} AI 复核与人工审核分别记录；下游接收状态以 DeepFlare 为准。</p>
+  <p className="daily-pilot-note">{data?.editorial.auto_publish ? '符合条件的素材自动生成带出处的知识包；DeepFlare 拉取并校验后显示。' : '当前未启用自动发布：先自动分类，展示和同步仍逐批确认；确认用途并手动发布后，DeepFlare 才会拉取。'} AI 复核与人工审核分别记录；下游接收状态以 DeepFlare 为准。</p>
  </section>;
 }

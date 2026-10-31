@@ -441,6 +441,54 @@ def test_human_edit_or_exclusion_removes_stale_waiting_review_count(prepared):
     assert report["reviewed_count"] is None
 
 
+def test_automatic_acceptance_stays_pending_human_review_until_explicit_human_save(prepared):
+    from omnisignal.workbench.review import apply_automated_review
+    from test_workbench_auto_editorial import OfflineProvider
+    store, analysis, _, _ = prepared
+    analysis.provider = OfflineProvider()
+    item = add(store, 112)
+    p = pilot(prepared)
+    p.tick(when())
+    drain(analysis)
+    job = jobs(analysis)[0]
+    current = apply_automated_review(store, item["id"], item["revision"], job["id"])
+    assert current["status"] == "accepted"
+    report = p.tick(when(hour=17))["report"]
+    assert report["requires_human_review"] == 1 and report["reviewed_count"] is None
+    content = current["reviewed_analysis"]
+    store.review(item["id"], {"expected_revision": current["revision"], "reviewed_analysis": {
+        "source_job_id": None, "summary_zh": content["summary_zh"], "design": content["design"]}},
+        "synthetic-human-reviewer", "admin")
+    report = p.tick(when(hour=17, minute=1))["report"]
+    assert report["requires_human_review"] == 0 and report["reviewed_count"] is None
+    assert analysis.provider.calls == 1
+
+
+def test_recovered_projection_uses_effective_revision_without_changing_frozen_batch(prepared, tmp_path):
+    from omnisignal.workbench.analysis_recovery import recover_analysis_projections
+    from test_workbench_analysis_persistence import legacy_case
+    from test_workbench_auto_editorial import OfflineProvider
+    store, analysis, _, _ = prepared
+    item = add(store, 113)
+    provider = OfflineProvider()
+    baseline, job_id = legacy_case((store, item, analysis, provider), tmp_path)
+    plan = recover_analysis_projections(store, baseline, [item["id"]])
+    recover_analysis_projections(store, baseline, [item["id"]], apply=True,
+                                 expected_plan_sha256=plan["plan_sha256"])
+    state = {"day": "2026-10-27", "policy": POLICY, "projects": {item["id"]: item["project_id"]},
+             "items": [{"asset_id": item["id"], "expected_revision": item["revision"]}],
+             "preview": {"skip_reasons": {}, "pending": 1, "examined": 1, "scan_limited": False}}
+    batch = {"batch_id": "synthetic-legacy-batch", "state": "finished", "totals": {"submitted": 1, "completed": 1},
+             "items": [{"asset_id": item["id"], "expected_revision": item["revision"], "job_id": job_id,
+                        "disposition": "submitted", "status": "completed"}]}
+    original = deepcopy(batch)
+    p = pilot(prepared)
+    p.root.mkdir(parents=True, exist_ok=True)
+    report = p._report(state, batch, when(hour=17))
+    assert report["requires_human_review"] == 1 and report["analysed_images"] == 1
+    assert report["reviewed_count"] is None and batch == original and provider.calls == 0
+
+
 def test_policy_change_after_intent_does_not_expand_batch(prepared):
     store, analysis, _, path = prepared
     add(store, 1)

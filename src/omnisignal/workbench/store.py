@@ -33,6 +33,28 @@ def require(condition, message):
         raise Conflict(message)
 
 
+def asset_row_consistent(row):
+    """The indexed identity and embedded document must describe one revision."""
+    if row is None:
+        return False
+    item = json.loads(row["document"])
+    return (item.get("id") == row["id"] and type(item.get("revision")) is int
+            and item["revision"] == row["revision"] and item.get("status") == row["status"])
+
+
+def asset_from_row(row, *, strict=False):
+    require(row is not None, "素材不存在")
+    consistent = asset_row_consistent(row)
+    require(not strict or consistent, "素材存储版本不一致，请管理员核对；未调用模型")
+    item = json.loads(row["document"])
+    # Never present a stale embedded revision as the current indexed revision.
+    item.update(id=row["id"], revision=row["revision"], status=row["status"])
+    if not consistent:
+        item["storage_consistency"] = "revision_mismatch"
+        item["analysis_status"] = "not_analyzed"
+    return item
+
+
 def public_url(value):
     require(isinstance(value, str) and len(value) <= 4096, "来源链接无效")
     try:
@@ -198,9 +220,9 @@ class Store:
     def asset(self, asset_id):
         from .review import describe_review
         with self.db() as db:
-            row = db.execute("SELECT document FROM assets WHERE id=?", (asset_id,)).fetchone()
+            row = db.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
             require(row is not None, "素材不存在")
-            result = json.loads(row[0])
+            result = asset_from_row(row)
             result["audit"] = [{**dict(r), "details": json.loads(r["details"])} for r in db.execute(
                 "SELECT actor,action,at,details FROM audit WHERE entity=? ORDER BY id DESC LIMIT 100", (asset_id,))]
             return describe_review(result, db)
@@ -221,8 +243,8 @@ class Store:
         condition = " WHERE " + " AND ".join(where) if where else ""
         with self.db() as db:
             total = db.execute("SELECT count(*) FROM assets" + condition, args).fetchone()[0]
-            rows = db.execute("SELECT document FROM assets" + condition + " ORDER BY created_at DESC,id LIMIT ? OFFSET ?", (*args, page_size, (page-1)*page_size))
-            return {"items": [describe_review(json.loads(r[0]), db) for r in rows], "total": total, "page": page, "page_size": page_size}
+            rows = db.execute("SELECT * FROM assets" + condition + " ORDER BY created_at DESC,id LIMIT ? OFFSET ?", (*args, page_size, (page-1)*page_size))
+            return {"items": [describe_review(asset_from_row(r), db) for r in rows], "total": total, "page": page, "page_size": page_size}
 
     def review(self, asset_id, body, actor, role):
         from .review import bind_reviewed_analysis, describe_review
@@ -231,9 +253,9 @@ class Store:
         require(not set(body) - allowed, "包含不支持的修改字段")
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT document FROM assets WHERE id=?", (asset_id,)).fetchone()
+            row = db.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
             require(row is not None, "素材不存在")
-            item = json.loads(row[0])
+            item = asset_from_row(row, strict=True)
             require(type(body.get("expected_revision")) is int and body["expected_revision"] == item["revision"], "素材已被修改，请刷新后重试")
             patch = {k:v for k,v in body.items() if k not in {"expected_revision", "reviewed_analysis", "reviewed_taxonomy"}}
             require("permissions" not in patch or role == "admin", "用途权限需要管理员核对")
