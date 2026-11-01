@@ -17,7 +17,7 @@ CONFIG = {
     "label": "Ads of Brands · 户外广告",
     "listing": "https://adsofbrands.net/en/ads?media=4",
     "hosts": ["adsofbrands.net"],
-    "selector": "#com-left .com-media .print-image / #com-right",
+    "selector": "#com-left .com-media (.print-image | .print-images-carousel > .print-image-item) / #com-right",
 }
 
 
@@ -52,8 +52,20 @@ def extract_article(document, url):
         raise ValueError("outside_ad_project_scope")
     page = html.fromstring(document)
     roots = page.cssselect("#com-right")
-    media = page.cssselect("#com-left .com-media .print-image")
-    if len(roots) != 1 or not media:
+    media_roots = page.cssselect("#com-left .com-media")
+    # Both structures were observed in public static Outdoor project pages.
+    # The newer carousel selector stays inside the campaign media container;
+    # similarly named related cards and sidebar images are not candidates.
+    media = page.cssselect("#com-left .com-media .print-image, "
+                           "#com-left .com-media .print-images-carousel > .print-image-item")
+    if len(roots) != 1 or not media_roots:
+        raise ValueError("ad_project_structure_changed")
+    if not media:
+        # Outdoor is the source's placement category, not a promise of a
+        # static image. An explicitly embedded-only case is unsupported;
+        # never substitute its thumbnail, related card or video poster.
+        if any(container.xpath(".//iframe | .//video") for container in media_roots):
+            raise ValueError("ad_project_non_static_media")
         raise ValueError("ad_project_structure_changed")
     root = roots[0]
     headings, descriptions = root.cssselect("h1"), root.cssselect(".description")

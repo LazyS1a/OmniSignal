@@ -85,11 +85,12 @@ try {
  await page.screenshot({ path: path.join(results, '01-waiting-desktop.png'), fullPage: true });
 
  stage = 'partial-progress';
- await fixture(snapshot({ state: 'running', report: report({ state: 'running' }) }));
+ await fixture(snapshot({ state: 'running', report: report({ state: 'running', skip_reasons: { permission_required: 9, already_analyzed: 2, storage_inconsistent: 23 } }) }));
  await refresh.click();
  await card.getByText('今日分析进行中', { exact: true }).waitFor();
  check(JSON.stringify(await card.locator('dd').allTextContents()) === JSON.stringify(['7', '5', '0', '1']), 'report-counts-display-actual-submitted-completed-queued-failed');
- check((await card.textContent()).includes('分析权限待确认 32 张') && (await card.textContent()).includes('已有分析建议 2 张') && (await card.textContent()).includes('今日入队比目标少 23 张'), 'shortfall-shows-server-reasons-and-counts');
+ check((await card.innerText()).includes('素材存储版本异常，已跳过并保留待核查 23 张'), 'inconsistent-assets-explain-skip-without-pausing-healthy-work');
+ check((await card.textContent()).includes('分析权限待确认 9 张') && (await card.textContent()).includes('已有分析建议 2 张') && (await card.textContent()).includes('今日入队比目标少 23 张'), 'shortfall-shows-server-reasons-and-counts');
  check((await card.textContent()).includes('当前待人工复核 5 张') && (await card.textContent()).includes('正在分析 1 张'), 'pending-human-review-and-running-count-are-explicit');
  await page.screenshot({ path: path.join(results, '02-running-desktop.png'), fullPage: true });
  await page.setViewportSize({ width: 390, height: 844 });

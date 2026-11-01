@@ -198,7 +198,7 @@ class ProjectRetry:
     """
     REASONS = frozenset({
         "article_parse", "asset_ingest", "no_usable_images",
-        "outside_ad_project_scope", "ad_project_structure_changed", "ad_project_text_missing",
+        "outside_ad_project_scope", "ad_project_structure_changed", "ad_project_non_static_media", "ad_project_text_missing",
         "ad_project_text_out_of_bounds", "unsupported_ad_media_type", "ad_project_images_missing",
         "outside_project_scope", "project_structure_changed", "project_title_missing",
         "project_title_out_of_bounds", "project_text_out_of_bounds", "project_images_missing",

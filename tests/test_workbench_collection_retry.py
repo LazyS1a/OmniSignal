@@ -57,6 +57,7 @@ def test_failed_front_page_cools_down_and_later_static_cases_and_archives_progre
     assert first["status"] == "partial" and first["imported"] == 0
     assert len(source.calls) == 38 and source.articles == source.urls[:36]
     assert len(cursor(store)["pending"]) == 6 and not cursor(store)["done"]
+    assert ProjectRetry(store, project_id("adsofbrands", source.urls[0])).state["reason_code"] == "ad_project_non_static_media"
 
     # A normal later run with the same request allowance must reach four
     # supported root cases and three advertised archives, without retrying

@@ -42,6 +42,8 @@ FAILURE_MESSAGES = {
     "upstream_network": "模型请求失败：与上游的网络连接异常",
     "response_too_large": "模型请求失败：返回内容超过大小限制",
     "response_json_parse": "模型返回格式不合格：JSON 无法解析",
+    "response_truncated": "模型返回未完成：上游因输出长度限制停止生成",
+    "response_refused": "模型未提供可用分析：上游拒答或内容过滤",
     "response_schema_invalid": "模型返回字段或逐图分类未通过校验",
     "unknown_error": "模型分析失败：未能安全识别具体原因",
 }
@@ -223,7 +225,24 @@ class HTTPAnalysisProvider:
         except (ValueError, TypeError, RecursionError):
             raise AnalysisFailure("response_json_parse") from None
         try:
-            content = payload["choices"][0]["message"]["content"]
+            choice = payload["choices"][0]
+            if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+                raise AnalysisFailure("response_schema_invalid")
+            message = choice["message"]
+            finish, refusal = choice.get("finish_reason"), message.get("refusal")
+            # Completion metadata applies even when the partial content happens
+            # to be valid JSON. Older compatible providers may omit it.
+            if finish is not None and not isinstance(finish, str):
+                raise AnalysisFailure("response_schema_invalid")
+            if refusal is not None and not isinstance(refusal, str):
+                raise AnalysisFailure("response_schema_invalid")
+            if finish == "content_filter" or (isinstance(refusal, str) and refusal.strip()):
+                raise AnalysisFailure("response_refused")
+            if finish == "length":
+                raise AnalysisFailure("response_truncated")
+            if finish not in {None, "stop"}:
+                raise AnalysisFailure("response_schema_invalid")
+            content = message["content"]
             if not isinstance(content, str):
                 raise AnalysisFailure("response_schema_invalid")
             return content

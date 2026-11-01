@@ -33,6 +33,8 @@ export default function Automation({ revision }: { revision: number }) {
   return () => { alive = false; controller.abort(); clearInterval(timer); };
  }, [revision]);
  const today = data?.editorial.today;
+ const localReadPending = data?.editorial.last_tick?.blocked_reasons?.local_review_io_retry_wait;
+ const localReadFailed = data?.editorial.last_tick?.blocked_reasons?.local_review_io_retry_exhausted;
  return <section className="daily-pilot" aria-labelledby="automation-title">
   <div className="daily-pilot-heading"><div><h2 id="automation-title">采集 → 千问分类 → 灵感发布</h2><p className="daily-pilot-schedule">{data?.collection.date || '今日'} · 按北京时间统计新入库图片，重复图片不计入目标</p></div><span className="daily-pilot-state">{!data ? '读取中' : !data.worker_enabled ? '执行器未启动' : data.editorial.status === 'enabled' ? '自动分类与 AI 复核已启用' : data.editorial.status === 'invalid_config' ? '自动流程配置待检查' : '自动复核未启用'}</span></div>
   {error && <p className="daily-pilot-warning" role="alert">自动流程状态暂时无法读取，已有统计可能过时。</p>}
@@ -42,6 +44,8 @@ export default function Automation({ revision }: { revision: number }) {
   ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{typeof value === 'number' ? value : '—'}</dd></div>)}</dl>
   {!!data?.collection.remaining && <p className="daily-pilot-note">今天距采集目标还差 {data.collection.remaining} 张。来源供给不足、站点限流或请求预算用完都会留下实际缺口。</p>}
   {!!today?.permission_blocked && <p className="daily-pilot-warning">{today.permission_blocked} 张尚未记录内部展示或传输依据，暂不发布到 DeepFlare。</p>}
+  {!!localReadPending && <p className="daily-pilot-note">{localReadPending} 张素材暂时无法读取原图，正在等待本地复核；不会重新调用模型。</p>}
+  {!!localReadFailed && <p className="daily-pilot-warning">{localReadFailed} 张素材连续读取原图失败，已暂停本地复核，请管理员检查文件。已有分析结果保留。</p>}
   <p className="daily-pilot-note">{data?.editorial.auto_publish ? '符合条件的素材自动生成带出处的知识包；DeepFlare 拉取并校验后显示。' : '当前未启用自动发布：先自动分类，展示和同步仍逐批确认；确认用途并手动发布后，DeepFlare 才会拉取。'} AI 复核与人工审核分别记录；下游接收状态以 DeepFlare 为准。</p>
  </section>;
 }

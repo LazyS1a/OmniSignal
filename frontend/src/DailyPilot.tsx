@@ -19,6 +19,7 @@ const reasons: Record<string, string> = {
  permission_required: '分析权限待确认', already_analyzed: '已有分析建议', already_running: '已在分析队列', retry_required: '需单独确认重试',
  disabled: '分析功能未启用', not_configured: '模型尚未配置', budget_exhausted: '可用额度不足', queue_full: '分析队列已满',
  missing: '素材已不存在', revision_changed: '素材内容已更新', not_pending: '素材已离开待处理区',
+ storage_inconsistent: '素材存储版本异常，已跳过并保留待核查',
 };
 
 function count(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) && value >= 0; }

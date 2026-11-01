@@ -42,7 +42,8 @@ POLICY_KEYS = {"start_date", "end_date", "timezone", "weekdays", "hour", "minute
 STATE_KEYS = {"version", "day", "actor", "request_id", "policy", "items", "projects",
               "preview", "phase", "created_at", "checksum"}
 REASONS = {"missing", "revision_changed", "not_pending", "permission_required", "already_running",
-           "already_analyzed", "retry_required", "not_configured", "disabled", "budget_exhausted", "queue_full"}
+           "already_analyzed", "retry_required", "not_configured", "disabled", "budget_exhausted", "queue_full",
+           "storage_inconsistent"}
 
 
 class PilotError(Exception):

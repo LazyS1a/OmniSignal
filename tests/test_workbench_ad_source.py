@@ -63,6 +63,76 @@ def test_video_and_missing_structure_fail_closed():
         ad_source.extract_article("<h1>Title only</h1>", URL)
 
 
+@pytest.mark.parametrize("embedded", [
+    '<iframe src="https://www.youtube.com/embed/synthetic"></iframe>',
+    '<video src="https://adsofbrands.net/synthetic.mp4"></video>',
+])
+def test_embedded_only_media_is_distinct_from_a_changed_page_structure(embedded):
+    document = page().decode().replace(
+        f'<div class="print-image">\n    <a href="https://adsofbrands.net/images/commercial_origin/1/123456789.jpeg"><img src="{IMAGE}"></a>\n    </div>',
+        embedded)
+    with pytest.raises(ValueError, match="^ad_project_non_static_media$"):
+        ad_source.extract_article(document, URL)
+
+
+def test_static_media_with_video_still_uses_only_verified_project_images():
+    document = page().decode().replace('<div class="com-media">',
+        '<div class="com-media"><iframe src="https://www.youtube.com/embed/synthetic"></iframe>')
+    assert ad_source.extract_article(document, URL)["candidates"] == [{"url": IMAGE}]
+
+
+def test_missing_media_container_is_not_reported_as_known_embedded_media():
+    document = page().decode().replace('class="com-media"', 'class="unknown-layout"')
+    with pytest.raises(ValueError, match="^ad_project_structure_changed$"):
+        ad_source.extract_article(document, URL)
+
+
+def carousel_page(image=IMAGE):
+    """Synthetic text; media DOM matches the public 2026-11-01 sample.
+
+    Observed inside #com-left .com-media: .print-images-carousel directly
+    contains .print-image-item, which directly contains a commercial_big img.
+    No source prose or image is copied into the fixture.
+    """
+    old = f'<div class="print-image">\n    <a href="https://adsofbrands.net/images/commercial_origin/1/123456789.jpeg"><img src="{image}"></a>\n    </div>'
+    new = f'<div class="print-images-carousel "><div class="print-image-item"><img src="{image}"></div></div>'
+    document = page(image=image).decode()
+    assert old in document
+    return document.replace(old, new)
+
+
+def test_observed_carousel_static_media_is_supported_without_accepting_related_cards():
+    document = carousel_page() + f'''<div id="similar-ads"><div class="print-images-carousel">
+    <div class="print-image-item"><img src="https://adsofbrands.net/images/commercial_big/1/999999.jpeg"></div>
+    </div></div>'''
+    assert ad_source.extract_article(document, URL)["candidates"] == [{"url": IMAGE}]
+
+
+@pytest.mark.parametrize("url", [
+    "https://cdn.invalid/images/commercial_big/1/123.jpeg",
+    "https://adsofbrands.net/images/brand/1/123.jpeg",
+    IMAGE + "?token=synthetic", "http://adsofbrands.net/images/commercial_big/1/123.jpeg",
+])
+def test_carousel_retains_the_existing_image_origin_and_path_boundaries(url):
+    with pytest.raises(ValueError, match="^ad_project_images_missing$"):
+        ad_source.extract_article(carousel_page(image=url), URL)
+
+
+def test_unverified_image_item_outside_carousel_is_not_a_new_fallback():
+    document = carousel_page().replace('class="print-images-carousel "', 'class="unknown-wrapper"')
+    with pytest.raises(ValueError, match="^ad_project_structure_changed$"):
+        ad_source.extract_article(document, URL)
+
+
+def test_carousel_keeps_image_order_deduplicates_and_retains_six_candidate_limit():
+    images = [IMAGE, IMAGE] + [f"https://adsofbrands.net/images/commercial_big/1/{123456790+i}.jpeg" for i in range(7)]
+    original = f'<div class="print-image-item"><img src="{IMAGE}"></div>'
+    items = ''.join(f'<div class="print-image-item"><img src="{image}"></div>' for image in images)
+    document = carousel_page().replace(original, items)
+    assert ad_source.extract_article(document, URL)["candidates"] == [
+        {"url": image} for image in list(dict.fromkeys(images))[:6]]
+
+
 def test_advertising_source_uses_same_pending_budgeted_import_flow(tmp_path):
     store = Store(tmp_path)
     plan = store.create_plan({"name": "Outdoor", "source_id": "adsofbrands", "request_limit": 10}, "editor")

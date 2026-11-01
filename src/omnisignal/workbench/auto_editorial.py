@@ -25,6 +25,8 @@ ACTOR = "system:auto-editorial"
 CONFIG_ENV = "OMNISIGNAL_WORKBENCH_AUTO_EDITORIAL_CONFIG"
 SOURCE_IDS = {"potw", "adsofbrands", "bpando", "itsnicethat"}
 CONFIG_KEYS = {"schema_version", "enabled", "source_ids", "analysis_authorized", "auto_publish", "interval_seconds", "max_per_tick"}
+LOCAL_REVIEW_RETRY_DELAYS = (60, 300)
+LOCAL_REVIEW_MAX_IO_ATTEMPTS = len(LOCAL_REVIEW_RETRY_DELAYS) + 1
 
 
 def validate_config(value):
@@ -62,6 +64,12 @@ class AutoEditorial:
                 asset_id TEXT NOT NULL, revision INTEGER NOT NULL, job_id TEXT NOT NULL,
                 outcome TEXT NOT NULL, reason TEXT NOT NULL, at TEXT NOT NULL,
                 PRIMARY KEY(asset_id,revision,job_id))""")
+            # Keep operational retries separate from permanent quality outcomes.
+            # A separate additive table leaves the legacy outcome schema intact.
+            db.execute("""CREATE TABLE IF NOT EXISTS auto_editorial_local_retries(
+                asset_id TEXT NOT NULL, revision INTEGER NOT NULL, job_id TEXT NOT NULL,
+                attempts INTEGER NOT NULL, next_attempt_at REAL, reason TEXT NOT NULL, at TEXT NOT NULL,
+                PRIMARY KEY(asset_id,revision,job_id))""")
 
     def configuration(self):
         if self._config is None and self.policy_path is None:
@@ -77,6 +85,27 @@ class AutoEditorial:
         with self.store.db() as db:
             db.execute("INSERT OR REPLACE INTO auto_editorial_outcomes VALUES(?,?,?,?,?,?)",
                        (asset["id"], asset["revision"], asset.get("analysis_job_id") or "none", outcome, reason, stamp()))
+
+    def _record_local_io_failure(self, asset, job_id):
+        """Bound local rechecks of the same paid result; never call the model."""
+        identity = (asset["id"], asset["revision"], job_id)
+        with self.store.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            prior = db.execute("SELECT attempts FROM auto_editorial_local_retries WHERE asset_id=? AND revision=? AND job_id=?", identity).fetchone()
+            attempts = min(LOCAL_REVIEW_MAX_IO_ATTEMPTS, (prior[0] if prior else 0) + 1)
+            next_at = (self.store.clock() + LOCAL_REVIEW_RETRY_DELAYS[attempts - 1]
+                       if attempts < LOCAL_REVIEW_MAX_IO_ATTEMPTS else None)
+            reason = "local_review_io_retry_wait" if next_at is not None else "local_review_io_retry_exhausted"
+            db.execute("INSERT OR REPLACE INTO auto_editorial_local_retries VALUES(?,?,?,?,?,?,?)",
+                       (*identity, attempts, next_at, reason, stamp()))
+            self.store.audit(db, asset["id"], ACTOR, "automated_review_io_retry",
+                             {"revision": asset["revision"], "source_job_id": job_id, "attempt": attempts,
+                              "next_attempt_at": next_at, "reason": reason, "provider_calls": 0})
+        return reason
+
+    def _clear_local_retry(self, identity):
+        with self.store.db() as db:
+            db.execute("DELETE FROM auto_editorial_local_retries WHERE asset_id=? AND revision=? AND job_id=?", identity)
 
     def _authorize(self, config):
         if config["analysis_authorized"] is None:
@@ -173,20 +202,34 @@ class AutoEditorial:
                     exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_jobs'").fetchone()
                     job = db.execute("SELECT status FROM analysis_jobs WHERE id=?", (job_id,)).fetchone() if exists else None
                     prior = db.execute("SELECT outcome FROM auto_editorial_outcomes WHERE asset_id=? AND revision=? AND job_id=?", (asset["id"], asset["revision"], job_id)).fetchone()
+                    local_retry = db.execute("SELECT attempts,next_attempt_at FROM auto_editorial_local_retries WHERE asset_id=? AND revision=? AND job_id=?", (asset["id"], asset["revision"], job_id)).fetchone()
                 if not job or job["status"] != "completed":
                     reasons["failed_job_needs_explicit_retry" if job and job["status"] in {"failed", "interrupted"} else "waiting_or_stale_job"] += 1
                     continue
                 if prior and prior["outcome"] == "manual_required":
                     reasons["manual_review_required"] += 1
                     continue
+                if local_retry:
+                    if local_retry["attempts"] >= LOCAL_REVIEW_MAX_IO_ATTEMPTS:
+                        reasons["local_review_io_retry_exhausted"] += 1
+                        continue
+                    if local_retry["next_attempt_at"] > self.store.clock():
+                        reasons["local_review_io_retry_wait"] += 1
+                        continue
                 if attempted >= config["max_per_tick"]:
                     break
                 attempted += 1
+                review_identity = (asset["id"], asset["revision"], job_id)
                 try:
                     asset = apply_automated_review(self.store, asset["id"], asset["revision"], job_id)
+                    self._clear_local_retry(review_identity)
                     result["reviewed"] += 1
-                except (Conflict, KeyError, TypeError, OSError):
+                except OSError:
+                    reasons[self._record_local_io_failure(asset, job_id)] += 1
+                    continue
+                except (Conflict, KeyError, TypeError):
                     self._record(asset, "manual_required", "freshness_or_quality_gate")
+                    self._clear_local_retry(review_identity)
                     reasons["manual_review_required"] += 1
                     continue
             if asset.get("reviewed_analysis", {}).get("provenance") != "model_automated_review":
