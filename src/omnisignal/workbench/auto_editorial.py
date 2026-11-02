@@ -17,7 +17,7 @@ import threading
 
 from omnisignal.knowledge.release import KnowledgeError, _lock
 from .publishing import publish_store_assets, publication_snapshot_ids
-from .review import apply_automated_review, fresh_review
+from .review import apply_automated_review, fresh_review, validate_automated_quality
 from .store import Conflict, encode, require, stamp
 from .taxonomy import fresh_taxonomy
 
@@ -70,6 +70,13 @@ class AutoEditorial:
                 asset_id TEXT NOT NULL, revision INTEGER NOT NULL, job_id TEXT NOT NULL,
                 attempts INTEGER NOT NULL, next_attempt_at REAL, reason TEXT NOT NULL, at TEXT NOT NULL,
                 PRIMARY KEY(asset_id,revision,job_id))""")
+            db.execute("""CREATE TABLE IF NOT EXISTS auto_editorial_quality_holds(
+                asset_id TEXT NOT NULL, revision INTEGER NOT NULL, job_id TEXT NOT NULL,
+                fingerprint TEXT NOT NULL, PRIMARY KEY(asset_id,revision,job_id))""")
+
+    def _quality_fingerprint(self, db, job):
+        from .design_skills import details_digest, get_analysis_details, versions
+        return details_digest({"details": get_analysis_details(db, job["id"]), "validator": versions()})
 
     def configuration(self):
         if self._config is None and self.policy_path is None:
@@ -166,6 +173,11 @@ class AutoEditorial:
                 or asset.get("status") != "accepted" or asset.get("publication_status") == "withdrawn"
                 or asset.get("source_id") not in config["source_ids"]
                 or any(asset.get("permissions", {}).get(name) != "allowed" for name in ("display", "export")))
+            if asset.get("reviewed_analysis", {}).get("provenance") == "model_automated_review":
+                try:
+                    validate_automated_quality(db, asset)
+                except (Conflict, ValueError, KeyError, TypeError):
+                    stale = True
         if not stale:
             return False
         root = Path(self.publication_root or os.getenv("OMNISIGNAL_KNOWLEDGE_DIR", str(self.store.root / "published")))
@@ -200,14 +212,21 @@ class AutoEditorial:
                     continue
                 with self.store.db() as db:
                     exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_jobs'").fetchone()
-                    job = db.execute("SELECT status FROM analysis_jobs WHERE id=?", (job_id,)).fetchone() if exists else None
-                    prior = db.execute("SELECT outcome FROM auto_editorial_outcomes WHERE asset_id=? AND revision=? AND job_id=?", (asset["id"], asset["revision"], job_id)).fetchone()
+                    job = db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job_id,)).fetchone() if exists else None
+                    prior = db.execute("SELECT outcome,reason FROM auto_editorial_outcomes WHERE asset_id=? AND revision=? AND job_id=?", (asset["id"], asset["revision"], job_id)).fetchone()
                     local_retry = db.execute("SELECT attempts,next_attempt_at FROM auto_editorial_local_retries WHERE asset_id=? AND revision=? AND job_id=?", (asset["id"], asset["revision"], job_id)).fetchone()
+                    from .design_skills import details_required
+                    specialized = job is not None and details_required(dict(job))
+                    fingerprint = self._quality_fingerprint(db, job) if specialized else None
+                    hold = db.execute("SELECT fingerprint FROM auto_editorial_quality_holds WHERE asset_id=? AND revision=? AND job_id=?", (asset["id"], asset["revision"], job_id)).fetchone()
                 if not job or job["status"] != "completed":
                     reasons["failed_job_needs_explicit_retry" if job and job["status"] in {"failed", "interrupted"} else "waiting_or_stale_job"] += 1
                     continue
-                if prior and prior["outcome"] == "manual_required":
+                if prior and prior["outcome"] == "manual_required" and not specialized:
                     reasons["manual_review_required"] += 1
+                    continue
+                if prior and prior["outcome"] == "exception_held" and hold and hold[0] == fingerprint:
+                    reasons[prior["reason"]] += 1
                     continue
                 if local_retry:
                     if local_retry["attempts"] >= LOCAL_REVIEW_MAX_IO_ATTEMPTS:
@@ -228,9 +247,14 @@ class AutoEditorial:
                     reasons[self._record_local_io_failure(asset, job_id)] += 1
                     continue
                 except (Conflict, KeyError, TypeError):
-                    self._record(asset, "manual_required", "freshness_or_quality_gate")
+                    reason = "content_quality_attention" if specialized else "manual_review_required"
+                    self._record(asset, "exception_held" if specialized else "manual_required",
+                                 reason if specialized else "freshness_or_quality_gate")
+                    if specialized:
+                        with self.store.db() as db:
+                            db.execute("INSERT OR REPLACE INTO auto_editorial_quality_holds VALUES(?,?,?,?)", (*review_identity, fingerprint))
                     self._clear_local_retry(review_identity)
-                    reasons["manual_review_required"] += 1
+                    reasons[reason] += 1
                     continue
             if asset.get("reviewed_analysis", {}).get("provenance") != "model_automated_review":
                 continue
@@ -239,8 +263,10 @@ class AutoEditorial:
             try:
                 fresh_review(asset)
                 fresh_taxonomy(asset)
+                with self.store.db() as db:
+                    validate_automated_quality(db, asset)
             except (Conflict, KeyError, TypeError):
-                reasons["review_revision_changed"] += 1
+                reasons["review_revision_or_quality_changed"] += 1
                 continue
             if not config["auto_publish"]:
                 reasons["automatic_publication_disabled"] += 1

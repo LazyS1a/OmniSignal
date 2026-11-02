@@ -46,6 +46,6 @@ export default function Automation({ revision }: { revision: number }) {
   {!!today?.permission_blocked && <p className="daily-pilot-warning">{today.permission_blocked} 张尚未记录内部展示或传输依据，暂不发布到 DeepFlare。</p>}
   {!!localReadPending && <p className="daily-pilot-note">{localReadPending} 张素材暂时无法读取原图，正在等待本地复核；不会重新调用模型。</p>}
   {!!localReadFailed && <p className="daily-pilot-warning">{localReadFailed} 张素材连续读取原图失败，已暂停本地复核，请管理员检查文件。已有分析结果保留。</p>}
-  <p className="daily-pilot-note">{data?.editorial.auto_publish ? '符合条件的素材自动生成带出处的知识包；DeepFlare 拉取并校验后显示。' : '当前未启用自动发布：先自动分类，展示和同步仍逐批确认；确认用途并手动发布后，DeepFlare 才会拉取。'} AI 复核与人工审核分别记录；下游接收状态以 DeepFlare 为准。</p>
+  <p className="daily-pilot-note">{data?.editorial.auto_publish ? '内容初审通过且用途依据齐全的素材自动生成带出处的知识包；存在疑点的素材隔离待处理。DeepFlare 拉取并校验后才能显示。' : '当前未启用自动发布：分类与内容初审继续运行，发布包等待手动发布或管理员启用自动策略。'} AI 复核与人工审核分别记录；下游接收状态以 DeepFlare 为准。</p>
  </section>;
 }

@@ -25,8 +25,8 @@ export default function ReviewedAnalysisForm({ asset, value, confirmed, onChange
  const status = asset.reviewed_analysis_status || 'none';
  const assistantReview = asset.reviewed_analysis?.provenance === 'assistant_editorial_review';
  const automatedReview = asset.reviewed_analysis?.provenance === 'model_automated_review';
- return <details className="detail-section reviewed-analysis-section"><summary>{automatedReview ? '自动 AI 复核的设计分析' : assistantReview ? '助手整理的设计分析' : '人工审阅的设计分析'} <span className={`review-status ${status}`}>{status === 'current' ? (automatedReview ? 'AI 已复核 · 待人工确认' : assistantReview ? '已整理 · 当前版本' : '已审核 · 当前版本') : status === 'stale' ? '已过期 · 需要重审' : '尚未审核'}</span></summary>
-  <p className="muted">下面的内容由你核对后保存为审核版。可以独立编写，也可以先采用有效模型建议；仅采用建议不会完成审核。</p>
+ return <details className="detail-section reviewed-analysis-section"><summary>{automatedReview ? '自动 AI 复核的设计分析' : assistantReview ? '助手整理的设计分析' : '人工审阅的设计分析'} <span className={`review-status ${status}`}>{status === 'current' ? (automatedReview ? 'AI 已初审 · 当前版本' : assistantReview ? '已整理 · 当前版本' : '已审核 · 当前版本') : status === 'stale' ? '已过期 · 需要重审' : '尚未审核'}</span></summary>
+  <p className="muted">此处用于人工补充或纠正分析，可按需展开编辑。正常素材可由 AI 流程处理，无需逐张填写。人工保存前仍需核对内容；仅采用建议不会完成审核。</p>
   {asset.reviewed_analysis && <p className="review-provenance">上次记录：{asset.reviewed_analysis.reviewed_by} · {dateLabel(asset.reviewed_analysis.reviewed_at)} · 版本 {asset.reviewed_analysis.revision}{automatedReview ? ` · 自动 AI 复核（${asset.reviewed_analysis.model_version || '模型未记录'}），未经人工逐项复核` : assistantReview ? ' · AI 助手整理，未经人工逐项复核' : asset.reviewed_analysis.model_version && asset.reviewed_analysis.model_version !== 'none' ? ` · 辅助模型 ${asset.reviewed_analysis.model_version}` : ' · 独立人工审阅'}</p>}
   {status === 'stale' && <p className="analysis-error">素材在上次审核后发生了修改。这份旧分析不能作为当前发布依据，请逐项核对后重新确认。</p>}
   {value.source_job_id ? <div className="analysis-status">草稿来自当前素材的有效模型分析记录；保存时服务端会再次核验。<button type="button" className="text-button" onClick={() => onChange({ ...value, source_job_id: null })} disabled={!canEdit}>改为独立人工审阅</button></div> : <p className="muted">本次按独立人工审阅保存，不借用旧模型任务作为新证据。</p>}

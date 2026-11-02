@@ -197,8 +197,8 @@ def create_app(root=None, *, start_worker=None, frontend=None):
         return {"version": TAXONOMY_VERSION, "groups": TAXONOMY}
 
     @app.get(BASE+"/assets")
-    def assets(status:str="accepted",q:str=Query("",max_length=200),purpose:str="",page:int=Query(1,ge=1,le=100000),page_size:int=Query(24,ge=1,le=60),identity=Depends(auth.principal)):
-        result=store.list_assets(status,q,purpose,page,page_size)
+    def assets(status:str="accepted",q:str=Query("",max_length=200),purpose:str="",page:int=Query(1,ge=1,le=100000),page_size:int=Query(24,ge=1,le=60),processing_group:str=Query("",max_length=40),identity=Depends(auth.principal)):
+        result=store.list_assets(status,q,purpose,page,page_size,processing_group)
         result["items"]=[present(item) for item in result["items"]]
         return result
 

@@ -227,10 +227,11 @@ class Store:
                 "SELECT actor,action,at,details FROM audit WHERE entity=? ORDER BY id DESC LIMIT 100", (asset_id,))]
             return describe_review(result, db)
 
-    def list_assets(self, status="accepted", q="", purpose="", page=1, page_size=24):
+    def list_assets(self, status="accepted", q="", purpose="", page=1, page_size=24, processing_group=""):
         from .review import describe_review
         require(status in {"accepted", "pending", "supplemental", "excluded", "all"}, "素材状态无效")
         require(purpose in {"", "brand", "conversion"}, "广告分类无效")
+        require(processing_group in {"", "waiting_analysis", "technical_failure", "quality_issue", "unclassified", "stale", "ready", "published"}, "处理分组无效")
         where, args = [], []
         if status != "all":
             where.append("status=?"); args.append(status)
@@ -242,6 +243,19 @@ class Store:
             where.append("EXISTS(SELECT 1 FROM json_each(assets.document,'$.purposes') WHERE value=?)"); args.append(purpose)
         condition = " WHERE " + " AND ".join(where) if where else ""
         with self.db() as db:
+            if processing_group:
+                # Derive freshness/quality before pagination. Filtering a page in
+                # the browser would hide matching items on subsequent pages.
+                matches = []
+                total = 0
+                start = (page - 1) * page_size
+                for row in db.execute("SELECT * FROM assets" + condition + " ORDER BY created_at DESC,id", args):
+                    item = describe_review(asset_from_row(row), db)
+                    if item.get("processing_group") == processing_group:
+                        if start <= total < start + page_size:
+                            matches.append(item)
+                        total += 1
+                return {"items": matches, "total": total, "page": page, "page_size": page_size}
             total = db.execute("SELECT count(*) FROM assets" + condition, args).fetchone()[0]
             rows = db.execute("SELECT * FROM assets" + condition + " ORDER BY created_at DESC,id LIMIT ? OFFSET ?", (*args, page_size, (page-1)*page_size))
             return {"items": [describe_review(asset_from_row(r), db) for r in rows], "total": total, "page": page, "page_size": page_size}

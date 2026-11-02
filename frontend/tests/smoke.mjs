@@ -231,7 +231,7 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
   await page.getByRole('heading', { name: title, exact: true }).click();
   modal = page.getByRole('dialog');
   await modal.locator('summary').filter({ hasText: '自动 AI 复核的设计分析' }).click();
-  check(await modal.getByText('AI 已复核 · 待人工确认', { exact: true }).isVisible() && await modal.getByText(/自动 AI 复核（synthetic-ui-model），未经人工逐项复核/).isVisible(), 'automated-origin-title-and-body-never-claim-human-review');
+  check(await modal.getByText('AI 已初审 · 当前版本', { exact: true }).isVisible() && await modal.getByText(/自动 AI 复核（synthetic-ui-model），未经人工逐项复核/).isVisible(), 'automated-origin-title-and-body-never-claim-human-review');
   check(await modal.locator('summary').filter({ hasText: '人工审阅的设计分析' }).count() === 0 && !await modal.getByRole('checkbox', { name: '我已逐项核对摘要、设计分析与依据类型，确认本次保存为人工审核版', exact: true }).isChecked(), 'automatic-review-does-not-preconfirm-human-review');
   await modal.getByRole('button', { name: '关闭', exact: true }).click();
   await page.unroute(automatedRoute);

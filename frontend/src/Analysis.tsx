@@ -31,8 +31,9 @@ export default function Analysis({ asset, canEdit, onAsset, onApply }: { asset: 
   catch (e) { setError((e as Error).message); }
   finally { setBusy(false); }
  }
- return <details className="detail-section analysis-section"><summary>分析建议 <span className="muted">{running ? '处理中' : suggestion ? '待人工复核' : config?.configured ? '按需分析' : '未配置模型'}</span></summary>
-  <p className="muted">仅分析这张图片和必要说明。建议不会自动改变收录状态、用途权限或发布结果。</p>
+ const aiReviewed = asset.reviewed_analysis?.provenance === 'model_automated_review' && asset.reviewed_analysis_status === 'current';
+ return <details className="detail-section analysis-section"><summary>原始分析建议 <span className="muted">{running ? '处理中' : aiReviewed ? '已完成 AI 初审' : suggestion ? '等待内容初审' : config?.configured ? '按需分析' : '未配置模型'}</span></summary>
+  <p className="muted">仅分析这张图片和必要说明。自动流程启用时，合格素材会自动收录；用途依据齐全后可按发布策略生成知识包。分析不会授予用途权限。</p>
   {config?.backend === 'nova' && <p className="muted">通过 Nova 的视觉理解服务分析；实际模型以本次分析结果为准。</p>}
   {config && <p className="analysis-status">{config.reason}<br />{config.request_limit === null ? <>无每日次数上限 · 今日已调用 {config.used} 次 · 按 UTC 日统计</> : <>今日模型请求 {config.used} / {config.request_limit} · 按 UTC 日重置</>}</p>}
   {asset.permissions.analysis !== 'allowed' && <p className="analysis-status">这张素材的模型分析权限尚未允许。管理员核对依据并保存权限后，才能提交分析。</p>}
@@ -40,10 +41,10 @@ export default function Analysis({ asset, canEdit, onAsset, onApply }: { asset: 
   {error && <p className="analysis-error" role="alert">{error}</p>}
   {jobs[0]?.reason && <p className="muted">最近结果：{jobs[0].reason}</p>}
   <button className="button secondary small" type="button" disabled={!allowed} onClick={analyze}>{running ? '正在分析…' : busy ? '正在提交…' : retry ? jobs[0]?.status === 'completed' ? '重新分析（计入额度）' : '确认重试分析（计入额度）' : '分析这张图片'}</button>
-  {suggestion && <div className="suggestion"><span className="eyebrow">模型建议 · 尚未审核</span>
+  {suggestion && <div className="suggestion"><span className="eyebrow">{aiReviewed ? '原始模型建议 · 当前素材已通过 AI 初审' : '模型建议 · 尚未审核'}</span>
    {suggestion.model_version && <p className="muted">本次模型：{suggestion.model_version}</p>}
    <p><strong>{{ advertisement: '广告素材', reference: '设计参考', uncertain: '尚待判断' }[suggestion.kind] || suggestion.kind}</strong>{suggestion.purposes.map(p => <span className={`tag ${p}`} key={p}>{purposeLabel[p]}</span>)}</p><p>{suggestion.reason}</p>{suggestion.description && <p className="muted">{suggestion.description}</p>}
    {suggestion.design && <dl>{(Object.keys(designLabels) as Array<keyof DesignAnalysis>).map(key => { const field = suggestion.design?.[key]; return <div key={key}><dt><strong>{designLabels[key]}</strong></dt><dd style={{ margin: '6px 0 16px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{(typeof field === 'object' ? field?.text : field) || '暂无可靠结论'}</dd></div>; })}</dl>}
-   {!fresh && <p className="analysis-error">素材已修改，这份建议已过期。请重新分析。</p>}{fresh && !asset.analysis_suggestion_job_id && <p className="analysis-error">这份建议缺少与当前版本匹配的有效任务记录。请重新分析，或在人工审阅区独立填写。</p>}<button className="button secondary small" disabled={!canEdit || !fresh || !asset.analysis_suggestion_job_id} onClick={() => { if (!asset.analysis_suggestion_job_id) return; onApply(suggestion, asset.analysis_suggestion_job_id); setApplied(true); }}>采用建议填写</button>{applied && <p className="analysis-status" role="status">已填入人工审阅草稿，尚未完成审核。请逐项核对摘要和八项设计分析，勾选确认后再保存。</p>}</div>}
+   {!fresh && !aiReviewed && <p className="analysis-error">素材已修改，这份建议已过期。请重新分析。</p>}{fresh && !asset.analysis_suggestion_job_id && <p className="analysis-error">这份建议缺少与当前版本匹配的有效任务记录。请重新分析，或在人工审阅区独立填写。</p>}<button className="button secondary small" disabled={!canEdit || !fresh || !asset.analysis_suggestion_job_id} onClick={() => { if (!asset.analysis_suggestion_job_id) return; onApply(suggestion, asset.analysis_suggestion_job_id); setApplied(true); }}>采用建议填写</button>{applied && <p className="analysis-status" role="status">已填入人工审阅草稿，尚未完成审核。请逐项核对摘要和八项设计分析，勾选确认后再保存。</p>}</div>}
  </details>;
 }

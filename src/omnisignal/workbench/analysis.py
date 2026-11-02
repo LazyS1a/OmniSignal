@@ -153,7 +153,7 @@ def _result(value, image_id, *, require_taxonomy=False):
 
 class HTTPAnalysisProvider:
     requires_taxonomy = True
-    def __init__(self, *, api_key, model, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", transport=None):
+    def __init__(self, *, api_key, model, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1", transport=None, design_skills=False):
         try:
             parts = urlsplit(base_url)
             require(parts.scheme == "https" and bool(parts.hostname) and not parts.username
@@ -165,21 +165,32 @@ class HTTPAnalysisProvider:
         require(isinstance(model, str) and bool(model.strip()) and len(model) <= 200, "未配置广告分析模型")
         self.api_key, self.model_version = api_key, model
         self.base_url, self.transport = base_url.rstrip("/"), transport
-        self.cache_identity = hashlib.sha256(encode({"endpoint": self.base_url, "model": model, "prompt": SYSTEM}).encode()).hexdigest()
+        self.design_skills = bool(design_skills)
+        self.last_usage = None
+        self.system_prompt = SYSTEM
+        identity = {"endpoint": self.base_url, "model": model, "prompt": SYSTEM}
+        if self.design_skills:
+            from .design_skills import PROMPT, PROVIDER_PREFIX, versions
+            self.system_prompt += PROMPT
+            identity.update(prompt=self.system_prompt, versions=versions())
+        digest = hashlib.sha256(encode(identity).encode()).hexdigest()
+        self.cache_identity = (PROVIDER_PREFIX if self.design_skills else "") + digest
 
     @classmethod
     def from_env(cls):
         return cls(api_key=os.getenv("OMNISIGNAL_WORKBENCH_MODEL_API_KEY", ""),
                    model=os.getenv("OMNISIGNAL_WORKBENCH_MODEL", ""),
-                   base_url=os.getenv("OMNISIGNAL_WORKBENCH_MODEL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"))
+                   base_url=os.getenv("OMNISIGNAL_WORKBENCH_MODEL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+                   design_skills=os.getenv("OMNISIGNAL_WORKBENCH_DESIGN_SKILLS", "off").lower() in {"1", "true", "on"})
 
     def analyze(self, asset, image):
         # Only the selected image and bounded editorial hints cross this boundary.
         context = {"source_image_id": asset["id"], "title": asset["title"][:500],
                    "description": asset.get("description", "")[:2000]}
-        body = {"model": self.model_version, "temperature": 0, "max_tokens": 6000,
+        self.last_usage = None
+        body = {"model": self.model_version, "temperature": 0, "max_tokens": 10000 if self.design_skills else 6000,
                 "response_format": {"type": "json_object"}, "messages": [
-                    {"role": "system", "content": SYSTEM},
+                    {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": [
                         {"type": "text", "text": encode(context)},
                         {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(image).decode("ascii")}},
@@ -245,6 +256,12 @@ class HTTPAnalysisProvider:
             content = message["content"]
             if not isinstance(content, str):
                 raise AnalysisFailure("response_schema_invalid")
+            usage = payload.get("usage")
+            if isinstance(usage, dict):
+                # Do not store account metadata, pricing guesses or raw bodies.
+                safe = {key: usage[key] for key in ("prompt_tokens", "completion_tokens", "total_tokens")
+                        if type(usage.get(key)) is int and 0 <= usage[key] <= 100_000_000}
+                self.last_usage = safe or None
             return content
         except (KeyError, IndexError, TypeError):
             raise AnalysisFailure("response_schema_invalid") from None
@@ -266,6 +283,11 @@ class AnalysisService:
                     self.provider = HTTPAnalysisProvider.from_env()
             except (Conflict, ValueError, TypeError):
                 self._configuration_error = "请配置分析后端的 HTTPS 接口与专用凭据"
+        self.legacy_provider = None
+        if isinstance(self.provider, HTTPAnalysisProvider) and self.provider.design_skills:
+            self.legacy_provider = HTTPAnalysisProvider(api_key=self.provider.api_key,
+                model=self.provider.model_version, base_url=self.provider.base_url,
+                transport=self.provider.transport, design_skills=False)
         self._thread = None
         self._stop = threading.Event()
         with store.db() as db:
@@ -281,11 +303,13 @@ class AnalysisService:
                 CREATE TABLE IF NOT EXISTS analysis_batches (
                     id TEXT PRIMARY KEY, actor TEXT NOT NULL, payload_hash TEXT NOT NULL,
                     created_at TEXT NOT NULL, document TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS analysis_details (
+                    job_id TEXT PRIMARY KEY, document TEXT NOT NULL);
             """)
             columns = {row[1] for row in db.execute("PRAGMA table_info(analysis_jobs)")}
             for name, declaration in (("remote_request_id", "TEXT"), ("remote_job_id", "TEXT"),
                                       ("next_poll_at", "REAL NOT NULL DEFAULT 0"), ("input_binding", "TEXT"),
-                                      ("asset_revision", "INTEGER"), ("projection_evidence", "TEXT")):
+                                      ("asset_revision", "INTEGER"), ("projection_evidence", "TEXT"), ("details_sha256", "TEXT")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE analysis_jobs ADD COLUMN {name} {declaration}")
         # A live worker owns this cross-process lock for its complete request.
@@ -303,6 +327,30 @@ class AnalysisService:
         except KnowledgeError:
             pass
 
+    def _skills_limit(self):
+        try:
+            value = int(os.getenv("OMNISIGNAL_WORKBENCH_DESIGN_SKILLS_DAILY_LIMIT", "20"))
+            return max(0, min(value, 10000))
+        except ValueError:
+            return 0
+
+    def _skills_reserved(self, db):
+        # All versioned jobs share the rollout budget. Outstanding calls from
+        # yesterday still reserve capacity today; quota_day follows the existing
+        # UTC request ledger, independently of the Shanghai business scheduler.
+        return db.execute("SELECT count(*) FROM analysis_jobs WHERE provider LIKE 'design-v1:%' AND "
+                          "((charged=1 AND quota_day=?) OR (charged=0 AND status IN ('queued','running','waiting_remote')))",
+                          (self.store.day(),)).fetchone()[0]
+
+    def _new_job_provider(self, db):
+        if self.legacy_provider is not None and self._skills_reserved(db) >= self._skills_limit():
+            return self.legacy_provider
+        return self.provider
+
+    def _job_provider(self, identity):
+        return next((provider for provider in (self.provider, self.legacy_provider)
+                     if provider is not None and provider.cache_identity == identity), None)
+
     def _limit(self):
         raw = os.getenv("OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT", "0").strip()
         if raw.lower() == "unlimited":
@@ -317,6 +365,7 @@ class AnalysisService:
         limit = self._limit()
         with self.store.db() as db:
             quota = self._quota(db)
+            skill_reserved = self._skills_reserved(db)
         used = quota["used"]
         if self.provider is None:
             status, reason = "not_configured", self._configuration_error
@@ -325,7 +374,7 @@ class AnalysisService:
         elif quota["remaining"] == 0:
             status, reason = "budget_exhausted", "今日模型请求额度已用完或已分配给排队任务"
         else:
-            status, reason = "ready", "按所选单张图片分析，结果需人工复核"
+            status, reason = "ready", "按所选单张图片分析，合格结果由自动流程复核；异常保留待处理"
         remote = getattr(self.provider, "configuration", lambda: {})()
         if status == "ready" and remote.get("ready") is False:
             reason = "Nova 连接已配置；提交时核验实际模型与服务状态"
@@ -333,7 +382,10 @@ class AnalysisService:
                 "request_limit": limit, "used": used, "reserved": quota["reserved"],
                 "remaining": quota["remaining"], "unlimited": limit is None,
                 "backend": "nova" if getattr(self.provider, "is_nova", False) else "direct",
-                "model": getattr(self.provider, "model_version", None), "remote": remote}
+                "model": getattr(self.provider, "model_version", None), "remote": remote,
+                "design_skills": {"enabled": bool(getattr(self.provider, "design_skills", False)),
+                                  "daily_limit": self._skills_limit(), "used_and_reserved": skill_reserved,
+                                  "quota_timezone": "UTC"}}
 
     def _quota(self, db):
         """Queued calls reserve admission capacity, not billed usage.
@@ -412,7 +464,7 @@ class AnalysisService:
                     code, reason = "queue_full", "分析队列已满，暂不入队"
                 else:
                     item["disposition"] = "eligible"
-                    code, reason = "eligible", "可以分析；结果仍需人工复核"
+                    code, reason = "eligible", "可以分析；结果进入自动质量检查"
                     if remaining is not None:
                         remaining -= 1
                     queue_remaining -= 1
@@ -476,7 +528,7 @@ class AnalysisService:
             for item in results:
                 if item["disposition"] != "eligible":
                     continue
-                identity = self.provider.cache_identity
+                identity = self._new_job_provider(db).cache_identity
                 require(isinstance(identity, str) and bool(identity), "分析提供方标识无效")
                 row = db.execute("SELECT * FROM assets WHERE id=?", (item["asset_id"],)).fetchone()
                 asset = asset_from_row(row, strict=True)
@@ -504,7 +556,7 @@ class AnalysisService:
             row = db.execute("SELECT document FROM analysis_batches WHERE id=? AND actor=?", (batch_id, actor)).fetchone()
             return self._batch_view(db, json.loads(row[0])) if row else None
 
-    def _job(self, row):
+    def _job(self, row, db=None):
         value = dict(row)
         value.pop("cache_key", None)
         value.pop("provider", None)
@@ -513,6 +565,12 @@ class AnalysisService:
         value["suggestion"] = json.loads(value["suggestion"]) if value.get("suggestion") else None
         value["charged"] = bool(value["charged"])
         value["failure_code"], value["reason"] = failure_fields(value.get("reason"))
+        from .design_skills import get_analysis_details
+        if db is not None:
+            value["details"] = get_analysis_details(db, value["id"])
+        else:
+            with self.store.db() as connection:
+                value["details"] = get_analysis_details(connection, value["id"])
         return value
 
     def jobs(self, asset_id=None):
@@ -521,16 +579,17 @@ class AnalysisService:
                 rows = db.execute("SELECT * FROM analysis_jobs ORDER BY created_at DESC,id DESC LIMIT 200")
             else:
                 rows = db.execute("SELECT * FROM analysis_jobs WHERE asset_id=? ORDER BY created_at DESC,id DESC LIMIT 200", (asset_id,))
-            return [self._job(row) for row in rows]
+            return [self._job(row, db) for row in rows]
 
     def enqueue(self, asset_id, expected_revision, actor, retry=False):
         require(isinstance(actor, str) and 0 < len(actor) <= 1000, "缺少已认证的操作人")
         require(type(retry) is bool, "重试标记无效")
         require(self.provider is not None, "广告图文分析尚未配置")
-        identity = self.provider.cache_identity
-        require(isinstance(identity, str) and bool(identity), "分析提供方标识无效")
         with self.store.db() as db:
             db.execute("BEGIN IMMEDIATE")
+            selected_provider = self._new_job_provider(db)
+            identity = selected_provider.cache_identity
+            require(isinstance(identity, str) and bool(identity), "分析提供方标识无效")
             row = db.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
             require(row is not None, "素材不存在")
             asset = asset_from_row(row, strict=True)
@@ -540,6 +599,14 @@ class AnalysisService:
             unresolved = db.execute("SELECT * FROM analysis_jobs WHERE asset_id=? AND COALESCE(asset_revision,revision)=? AND remote_request_id IS NOT NULL AND status IN ('running','waiting_remote') ORDER BY created_at DESC LIMIT 1", (asset_id, expected_revision)).fetchone()
             if unresolved:
                 return self._job(unresolved)
+            if self.legacy_provider is not None:
+                # Switching rollout lanes never authorizes a second paid call.
+                prior_lane = db.execute("SELECT * FROM analysis_jobs WHERE asset_id=? AND COALESCE(asset_revision,revision)=? ORDER BY created_at DESC,id DESC LIMIT 1", (asset_id, expected_revision)).fetchone()
+                if prior_lane and prior_lane["provider"] != identity:
+                    if prior_lane["status"] in {"completed", "queued", "running", "waiting_remote"}:
+                        require(job_matches_asset(dict(prior_lane), asset), "已有任务输入已变化，未调用模型")
+                        return {**self._job(prior_lane), "cached": prior_lane["status"] == "completed"}
+                    require(retry, "上次任务未完成；切换规则不会自动重试，请明确确认重试")
             cache_key = hashlib.sha256(encode([asset_id, expected_revision, asset["sha256"], identity]).encode()).hexdigest()
             previous = db.execute("SELECT * FROM analysis_jobs WHERE asset_id=? AND COALESCE(asset_revision,revision)=? AND provider=? ORDER BY created_at DESC,id DESC LIMIT 1", (asset_id, expected_revision, identity)).fetchone()
             reusable = {"queued", "running", "waiting_remote"} if getattr(self.provider, "is_nova", False) else {"completed", "queued", "running"}
@@ -632,6 +699,7 @@ class AnalysisService:
             return None
 
     def _run_locked(self):
+        provider = self.provider
         with self.store.db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM analysis_jobs WHERE status='queued' OR (status='waiting_remote' AND next_poll_at<=?) ORDER BY created_at,id LIMIT 1", (time.time(),)).fetchone()
@@ -648,7 +716,8 @@ class AnalysisService:
             if not job.get("input_binding"):
                 job["input_binding"] = analysis_input_binding(asset)
                 db.execute("UPDATE analysis_jobs SET input_binding=? WHERE id=?", (job["input_binding"], job["id"]))
-            if job["provider"] != self.provider.cache_identity:
+            provider = self._job_provider(job["provider"])
+            if provider is None:
                 if job["remote_request_id"]:
                     db.execute("UPDATE analysis_jobs SET next_poll_at=? WHERE id=?", (time.time() + 60, job["id"]))
                     self._finish(db, job, "waiting_remote", "原 Nova 任务结果尚未确认；请恢复原分析网关配置以同步结果")
@@ -672,10 +741,11 @@ class AnalysisService:
                 if not reserved:
                     self._finish(db, job, "failed", "今日模型请求额度已用完；未调用模型")
                     return self._job(db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job["id"],)).fetchone())
-                remote_request_id = str(uuid.UUID(job["id"])) if getattr(self.provider, "is_nova", False) else None
+                remote_request_id = str(uuid.UUID(job["id"])) if getattr(provider, "is_nova", False) else None
                 db.execute("UPDATE analysis_jobs SET status='running',started_at=?,charged=1,quota_day=?,remote_request_id=? WHERE id=?", (stamp(), day, remote_request_id, job["id"]))
             else:
                 db.execute("UPDATE analysis_jobs SET status='running' WHERE id=?", (job["id"],))
+        details = None
         try:
             # Stable ID binds a remote request to this durable local job. Never
             # submit again automatically after an uncertain network outcome.
@@ -684,13 +754,20 @@ class AnalysisService:
             def receipt(remote_id):
                 with self.store.db() as receipt_db:
                     receipt_db.execute("UPDATE analysis_jobs SET remote_job_id=? WHERE id=?", (remote_id, job["id"]))
-            output = self.provider.analyze(context, image, receipt=receipt) if getattr(self.provider, "is_nova", False) else self.provider.analyze(context, image)
+            output = provider.analyze(context, image, receipt=receipt) if getattr(provider, "is_nova", False) else provider.analyze(context, image)
             try:
-                suggestion = _result(output, asset["id"], require_taxonomy=getattr(self.provider, "requires_taxonomy", False))
+                from .design_skills import bind_details, details_required
+                if details_required(job):
+                    require(isinstance(output, dict) and set(output) == {"result", "details"}, "专项分析响应缺少结果或详情")
+                    suggestion = _result(output["result"], asset["id"], require_taxonomy=True)
+                    details = bind_details(output["details"], suggestion, asset, job, provider.model_version,
+                                           getattr(provider, "last_usage", None))
+                else:
+                    suggestion = _result(output, asset["id"], require_taxonomy=getattr(provider, "requires_taxonomy", False))
             except (Conflict, KeyError, TypeError, ValueError, RecursionError):
                 raise AnalysisFailure("response_schema_invalid") from None
-            suggestion["model_version"] = self.provider.model_version
-            status, reason = "completed", "分析建议已保存，需人工复核"
+            suggestion["model_version"] = provider.model_version
+            status, reason = "completed", "分析建议已保存，等待内容审核"
         except Exception as exc:
             from .nova_analysis import NovaPending
             if isinstance(exc, NovaPending):
@@ -702,8 +779,12 @@ class AnalysisService:
             db.execute("BEGIN IMMEDIATE")
             if status == "waiting_remote":
                 db.execute("UPDATE analysis_jobs SET next_poll_at=? WHERE id=?", (time.time() + 15, job["id"]))
+            if details is not None and status == "completed":
+                from .design_skills import details_digest
+                db.execute("INSERT INTO analysis_details(job_id,document) VALUES(?,?)", (job["id"], encode(details)))
+                db.execute("UPDATE analysis_jobs SET details_sha256=? WHERE id=?", (details_digest(details), job["id"]))
             self._finish(db, job, status, reason, suggestion)
-            return self._job(db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job["id"],)).fetchone())
+            return self._job(db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job["id"],)).fetchone(), db)
 
     def start(self):
         if self._thread is not None and self._thread.is_alive():

@@ -316,6 +316,11 @@ def publish_store_assets(store, asset_ids, actor, *, expected_revisions=None,
                 require(reviewed is not None and reviewed["provenance"] == "model_automated_review"
                         and taxonomy is not None and taxonomy.get("review_method") == "automated", "自动发布需要当前版本的 AI 分析和分类复核")
                 require(asset.get("publication_status") != "withdrawn", "素材已永久撤回")
+            # Clicking explicit publish must not bypass the same v2 AI evidence
+            # guard used by the autonomous worker. Human review remains explicit.
+            if asset.get("reviewed_analysis", {}).get("provenance") == "model_automated_review":
+                from .review import validate_automated_quality
+                validate_automated_quality(db, asset)
             asset["image_path"] = str(store.images / asset["image_file"])
             selected.append(asset)
         publication_id, legacy_id = publication_snapshot_ids(selected)

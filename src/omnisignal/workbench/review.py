@@ -127,6 +127,8 @@ def automated_candidate(db, asset, job_id):
     require(asset.get("analysis_job_id") == job_id and asset.get("analysis_suggestion_revision") == asset["revision"]
             and asset.get("analysis_suggestion") == job["suggestion"], "stale_suggestion")
     suggestion = job["suggestion"]
+    from .design_skills import require_publishable_details
+    details = require_publishable_details(db, job, asset)
     require(job["model_version"].lower().startswith("qwen"), "qwen_model_required")
     require(suggestion.get("kind") in {"advertisement", "reference"}, "uncertain_kind")
     from .analysis import _result
@@ -135,7 +137,10 @@ def automated_candidate(db, asset, job_id):
     taxonomy = validated_taxonomy(clean["taxonomy"])
     require(len(taxonomy["note"]) >= 10 and re.search(r"图|画面|可见", taxonomy["note"]) is not None,
             "taxonomy_visual_evidence_required")
-    require(not any(word in clean["reason"] + taxonomy["note"] for word in ("无法判断", "无法确定", "不确定", "待确认", "可能是")), "uncertain_evidence")
+    # V2 separates local unknowns from unsupported identity/classification. A
+    # sentence such as "材料未知" must not reject an otherwise usable design.
+    if details is None:
+        require(not any(word in clean["reason"] + taxonomy["note"] for word in ("无法判断", "无法确定", "不确定", "待确认", "可能是")), "uncertain_evidence")
     require(len(clean["description"].strip()) >= 12 and re.search(r"[\u3400-\u9fff]", clean["description"])
             and len(clean["reason"].strip()) >= 10, "insufficient_summary")
     placeholders = {"图中未体现", "无法判断", "未知", "不适用", "无", "none", "n/a"}
@@ -143,6 +148,41 @@ def automated_candidate(db, asset, job_id):
     require(all(len(clean["design"][field].strip()) >= 10 and clean["design"][field].strip() not in placeholders
                 for field in ("palette", "composition", "hierarchy", "imagery", "reusable_ideas", "limitations")), "insufficient_design")
     return job, clean, taxonomy
+
+
+def automated_quality_proof(db, job, asset, new_revision):
+    """Keep the old reviewed-analysis wire shape; bind v2 QA beside it."""
+    from .design_skills import details_digest, require_publishable_details
+    details = require_publishable_details(db, job, asset)
+    if details is None:
+        return None
+    return {"schema_version": 1, "source_job_id": job["id"], "asset_id": asset["id"],
+            "source_revision": details["source"]["revision"], "accepted_revision": new_revision,
+            "sha256": asset["sha256"], "details_sha256": details_digest(details),
+            "review_method": "automated", "provenance": "model_analysis_with_rule_checks"}
+
+
+def validate_automated_quality(db, asset):
+    """Recheck current QA at the signature boundary, never submit a model job."""
+    from .design_skills import details_required, details_digest, require_publishable_details
+    review = fresh_review(asset)
+    require(review is not None and review["provenance"] == "model_automated_review", "automated_review_required")
+    exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_jobs'").fetchone()
+    row = db.execute("SELECT * FROM analysis_jobs WHERE id=?", (review["source_job_id"],)).fetchone() if exists else None
+    require(row is not None, "quality_source_job_missing")
+    job = dict(row)
+    require(job["status"] == "completed" and job["charged"] == 1 and job["asset_id"] == asset["id"], "quality_source_job_invalid")
+    if not details_required(job):
+        require(not asset.get("analysis_quality_review"), "quality_version_mismatch")
+        return None
+    details = require_publishable_details(db, job, asset)
+    proof = asset.get("analysis_quality_review")
+    require(isinstance(proof, dict) and proof == automated_quality_proof(db, job, asset, asset["revision"]),
+            "quality_evidence_changed")
+    require(proof["details_sha256"] == details_digest(details)
+            and review["model_version"] == details["model_version"]
+            and asset.get("analysis_job_id") == job["id"], "quality_evidence_changed")
+    return details
 
 
 def apply_automated_review(store, asset_id, expected_revision, job_id, actor="system:auto-editorial"):
@@ -172,6 +212,9 @@ def apply_automated_review(store, asset_id, expected_revision, job_id, actor="sy
         classified = bind_reviewed_taxonomy(asset, taxonomy, actor, new_revision)
         classified.update(schema_version=2, review_method="automated", provenance="model_automated_review",
                           source_job_id=job_id, model_version=job["model_version"])
+        quality_proof = automated_quality_proof(db, job, asset, new_revision)
+        if quality_proof is not None:
+            asset["analysis_quality_review"] = quality_proof
         asset.update(status="accepted", revision=new_revision, kind=suggestion["kind"], purposes=suggestion["purposes"],
                      reason=suggestion["reason"], reviewed_analysis=reviewed, reviewed_taxonomy=classified,
                      review_method="automated", analysis_status="analyzed")
@@ -199,4 +242,86 @@ def describe_review(asset, db=None):
         job = completed_source_job(db, asset, job_id)
         if job is not None and job["suggestion"] == asset.get("analysis_suggestion"):
             result["analysis_suggestion_job_id"] = job_id
+    result.update(describe_quality(asset, db))
     return result
+
+
+def describe_quality(asset, db=None):
+    """UI-only grouping; never persist these projections into the model input."""
+    from .design_skills import details_required, get_analysis_details, details_digest, versions, require_publishable_details
+    from .analysis import job_matches_asset, job_asset_revision
+    job = None
+    if db is not None and isinstance(asset.get("analysis_job_id"), str):
+        exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_jobs'").fetchone()
+        row = db.execute("SELECT * FROM analysis_jobs WHERE id=?", (asset["analysis_job_id"],)).fetchone() if exists else None
+        job = dict(row) if row is not None else None
+    try:
+        details = get_analysis_details(db, job["id"]) if db is not None and job is not None else None
+    except (Conflict, ValueError, KeyError, TypeError):
+        details = None
+    if details is not None and (not isinstance(details.get("quality"), dict)
+            or details["quality"].get("status") not in {"passed", "needs_attention"}
+            or not isinstance(details["quality"].get("issues"), list)
+            or not isinstance(details.get("profile"), str)
+            or not isinstance(details.get("inspiration_card"), dict)):
+        details = None
+    if details is not None and details_digest(details) != job.get("details_sha256"):
+        details = None
+    quality = {"status": "legacy", "issues": []}
+    details_status = "none"
+    stale = bool(asset.get("reviewed_analysis") and asset["reviewed_analysis"].get("revision") != asset["revision"])
+    if job is not None and (job["status"] == "stale" or (asset.get("status") == "pending"
+            and job_asset_revision(job) != asset["revision"])):
+        stale = True
+    if job is None and asset.get("analysis_quality_review"):
+        stale, details_status = True, "stale"
+        quality["status"] = "stale"
+    if job is not None and details_required(job):
+        quality = {"status": "missing", "source_job_id": job["id"], "issues": []}
+        if details is not None:
+            quality.update(status=details["quality"]["status"], issues=details["quality"]["issues"],
+                           profile=details["profile"], inspiration_card=details["inspiration_card"])
+            details_status = "current"
+            if asset.get("reviewed_analysis", {}).get("provenance") == "model_automated_review":
+                try:
+                    validate_automated_quality(db, asset)
+                except (Conflict, ValueError, KeyError, TypeError):
+                    stale = True
+            else:
+                stored = db.execute("SELECT document FROM assets WHERE id=?", (asset["id"],)).fetchone()
+                if stored is None or not job_matches_asset(job, json.loads(stored[0])):
+                    stale = True
+                if any(details.get(key) != value for key, value in versions().items()):
+                    stale = True
+                if quality["status"] == "passed":
+                    try:
+                        require_publishable_details(db, job, asset)
+                    except (Conflict, ValueError, KeyError, TypeError):
+                        stale = True
+            if stale:
+                quality["status"], details_status = "stale", "stale"
+        elif job["status"] == "completed":
+            details_status = "missing"
+    if stale:
+        group = "stale"
+    elif asset.get("publication_status") == "published":
+        group = "published"
+    elif job is not None and job["status"] in {"failed", "interrupted"}:
+        group = "technical_failure"
+    elif job is not None and job["status"] == "completed" and ((asset.get("analysis_suggestion") or {}).get("kind") == "uncertain"
+            or quality.get("profile") == "general-analysis"):
+        group = "unclassified"
+    elif quality["status"] in {"needs_attention", "missing"} and job is not None and job["status"] == "completed":
+        group = "quality_issue"
+    elif asset.get("status") == "accepted":
+        group = "ready"
+    elif quality["status"] == "passed":
+        group = "ready"
+    elif job is None or job["status"] != "completed":
+        group = "waiting_analysis"
+    elif (asset.get("analysis_suggestion") or {}).get("kind") == "uncertain":
+        group = "unclassified"
+    else:
+        group = "quality_issue"
+    return {"analysis_details": details, "analysis_details_status": details_status,
+            "analysis_quality": quality, "processing_group": group}

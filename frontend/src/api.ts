@@ -12,12 +12,25 @@ export type ReviewedTaxonomy = TaxonomyDraft & { schema_version: number; taxonom
 export type Taxonomy = { version: string; groups: Record<TaxonomyGroup, Record<string, { label: string; aliases: string[] }>> };
 export type ReviewedAnalysis = ReviewDraft & { schema_version: number; asset_id: string; revision: number; sha256: string; reviewed_by: string; reviewed_at: string; model_version?: string; provenance: 'manual_human_review' | 'model_assisted_human_review' | 'assistant_editorial_review' | 'model_automated_review' };
 export type Suggestion = { kind: string; purposes: Purpose[]; brand: string; reason: string; description: string; ocr_text: string; source_image_id: string; provenance: string; model_version?: string; design?: DesignAnalysis | ReviewedDesign; summary_zh?: string };
+export type ProcessingGroup = 'waiting_analysis' | 'technical_failure' | 'quality_issue' | 'unclassified' | 'stale' | 'ready' | 'published';
+export type QualityIssue = { code: string; field: string; severity: 'block' | 'warning'; evidence: string; action: string; message: string };
+export type InspirationCard = { task: string; method: string; applicability: string; limitations: string; evidence_ids: string[] };
+export type AnalysisDetails = {
+ schema_version: number; skill_version: string; prompt_version: string; validator_version: string; job_id: string; model_version: string;
+ source: { asset_id: string; revision: number; sha256: string; input_binding: string };
+ profile: string; route_reason: string; observations: Array<{ id: string; field: string; text: string }>;
+ source_statements: Array<{ text: string; source_quote: string }>; inferences: Array<{ field: string; text: string; evidence_ids: string[] }>;
+ unknowns: string[]; inspiration_card: InspirationCard;
+ quality: { status: 'passed' | 'needs_attention'; issues: QualityIssue[] };
+};
+export type AnalysisQuality = { status: 'passed' | 'needs_attention' | 'missing' | 'stale' | 'legacy'; profile?: string; issues: QualityIssue[]; inspiration_card?: InspirationCard; source_job_id?: string };
 export type Session = { authenticated: boolean; user?: { actor: string; role: string }; csrf_token?: string; setup_required?: boolean };
 export type Asset = {
  id: string; title: string; brand?: string; source_url?: string; image_url?: string; thumbnail_url?: string;
  width?: number; height?: number; status: Status; purposes: Purpose[]; kind: string; reason?: string;
  description?: string; ocr_text?: string; permissions: Permissions; revision: number; created_at?: string; project_id?: string; analysis_suggestion?: Suggestion; analysis_suggestion_revision?: number; analysis_suggestion_job_id?: string | null; reviewed_analysis?: ReviewedAnalysis; reviewed_analysis_status?: 'none' | 'current' | 'stale'; publication_status?: 'published' | 'withdrawn';
  reviewed_taxonomy?: ReviewedTaxonomy; reviewed_taxonomy_status?: 'none' | 'current' | 'stale';
+ analysis_job_id?: string; analysis_status?: string; analysis_details?: AnalysisDetails | null; analysis_details_status?: 'none' | 'current' | 'missing' | 'stale'; analysis_quality?: AnalysisQuality; processing_group?: ProcessingGroup;
  audit?: Array<{ action?: string; actor?: string; at?: string; created_at?: string; reason?: string }>;
 };
 export type Source = { id: string; label: string; category: string; verified: boolean; description?: string; requires_credentials?: boolean };
