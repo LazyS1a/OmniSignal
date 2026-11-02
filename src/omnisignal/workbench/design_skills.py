@@ -15,8 +15,8 @@ from .store import Conflict, encode, require
 
 SCHEMA_VERSION = 1
 SKILL_VERSION = "omni-design-1"
-PROMPT_VERSION = "omni-design-prompt-2"
-VALIDATOR_VERSION = "omni-design-check-2"
+PROMPT_VERSION = "omni-design-prompt-3"
+VALIDATOR_VERSION = "omni-design-check-3"
 PROVIDER_PREFIX = "design-v1:"
 OBSERVATION_FIELDS = ("palette", "typography", "composition", "hierarchy", "imagery")
 INFERENCE_FIELDS = ("reusable_ideas", "applicability", "limitations")
@@ -28,6 +28,8 @@ PROFILES = {
 }
 DETAIL_FIELDS = {"profile", "route_reason", "observations", "source_statements", "inferences", "unknowns", "inspiration_card", "self_check"}
 CARD_FIELDS = {"task", "method", "applicability", "limitations", "evidence_ids"}
+RESULT_FIELDS = {"purposes", "kind", "reason", "description", "ocr_text", "brand", "design", "taxonomy"}
+SYSTEM_NORMALIZATIONS = {"envelope_nested_details", "envelope_flat_details", "taxonomy_missing"}
 
 PROMPT = """
 本任务启用专项设计分析。整个响应只能有result和details两个字段，形如
@@ -46,7 +48,8 @@ source_statements：0至8项{text,source_quote}；source_quote必须逐字来自
 inferences：恰好三项{field,evidence_ids}，field分别为reusable_ideas、applicability、limitations；不要加text。evidence_ids引用支持该推断的observations.id，至少一项。不用来源陈述当图像证据。
 unknowns：0至10条明确的未知项。缺失工艺或效果等局部信息放这里，不影响可见部分的分析。
 inspiration_card：只含{task,evidence_ids}。task一句具体设计任务；evidence_ids列出支撑设计方法的观察id。不要重复method/applicability/limitations，服务端从result.design派生。
-self_check：0至8项{field,evidence,action}，仅列需要处理的具体矛盾或无依据主张；没有问题用[]。
+self_check：0至8项{field,evidence,action}，仅列尚未解决的具体矛盾或无依据主张；没有问题用[]。
+已经把brand留空或把局部缺失信息写入unknowns，就已经处理完，不重复列为self_check未解决问题。
 提交前对照图片检查：结果引用的是当前图吗？观察和推断对应吗？是否把材质、品牌、效果当事实？
 品牌无法从图中文字辨认则result.brand为空；实际销量、点击率、印刷工艺等没有证据则保留未知。
 每项精炼，不复制全部来源，不编置信分数。系统会检查跨字段一致、引用与来源引文。
@@ -73,6 +76,39 @@ def details_digest(details):
     return hashlib.sha256(json.dumps(details, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def normalize_model_envelope(output):
+    """Recover only unambiguous layout mistakes; never invent a missing category.
+
+    Missing taxonomy retains the paid image analysis but forces an uncertain
+    result and a server-owned blocking issue. Model-supplied permission fields,
+    duplicate details locations and other extra fields still fail closed.
+    """
+    require(isinstance(output, dict), "专项分析响应必须为对象")
+    normalizations = []
+    if set(output) == {"result", "details"}:
+        result, details = output["result"], output["details"]
+    elif set(output) == {"result"} and isinstance(output["result"], dict) and "details" in output["result"]:
+        result = {key: value for key, value in output["result"].items() if key != "details"}
+        details = output["result"]["details"]
+        normalizations.append("envelope_nested_details")
+    elif "details" in output and "result" not in output:
+        result = {key: value for key, value in output.items() if key != "details"}
+        details = output["details"]
+        normalizations.append("envelope_flat_details")
+    else:
+        raise Conflict("专项分析响应缺少结果或详情")
+    require(isinstance(result, dict) and RESULT_FIELDS - {"taxonomy"} <= set(result) <= RESULT_FIELDS,
+            "专项分析结果字段缺失或包含额外字段")
+    require(isinstance(details, dict), "专项分析详情必须为对象")
+    if "taxonomy" not in result:
+        require(result.get("kind") in {"advertisement", "reference", "uncertain"}, "模型返回的素材类型无效")
+        result = {**result, "kind": "uncertain", "taxonomy": {
+            "tags": {"industry": [], "medium": [], "task": []},
+            "note": "系统记录：模型未提供逐图分类，行业、媒介和任务均未知，保留图像分析待补充。"}}
+        normalizations.append("taxonomy_missing")
+    return result, details, normalizations
+
+
 def _text(value, limit=1500, empty=False):
     require(isinstance(value, str) and len(value) <= limit and (empty or bool(value.strip())), "专项分析文字无效")
     return value.strip()
@@ -88,12 +124,14 @@ def _evidence(value, ids):
             and len(value) == len(set(value)), "专项分析引用缺失或指向不存在的观察")
 
 
-def quality_checks(details, result):
+def quality_checks(details, result, system_normalizations=()):
     """Deterministic cross-checks, never a claim of independent visual accuracy."""
     issues = []
     def issue(code, field, evidence, action, severity="block"):
         issues.append({"code": code, "field": field, "severity": severity, "evidence": evidence,
                        "action": action, "message": action})
+    if "taxonomy_missing" in system_normalizations:
+        issue("taxonomy_missing", "taxonomy", "模型未返回逐图分类；系统仅保留空分类。", "补充图像分类后才能自动收录或发布")
     medium = set(result.get("taxonomy", {}).get("tags", {}).get("medium", []))
     profile = details["profile"]
     route_ok = (profile == "general-analysis" or
@@ -123,11 +161,17 @@ def quality_checks(details, result):
         if factual.search(text) and not any(word in text for word in ("无法确认", "不能判断", "无法判断", "未提供", "未知", "不代表", "不能证明")):
             issue("unsupported_specific_claim", field, text, "把无证据的效果或生产工艺改为未知")
     for item in details["self_check"]:
-        issue("model_reported_issue", item["field"], item["evidence"], item["action"])
+        local_unknown = (item["field"] == "brand" and not brand and
+                         any(word in (item["evidence"] + item["action"]).lower()
+                             for word in ("未知", "不确定", "无法", "不能", "未出现", "未能", "未见", "没有", "缺少", "留空", "为空", "未提供", "unknown")))
+        issue("brand_unknown_retained" if local_unknown else "model_reported_issue", item["field"],
+              item["evidence"], item["action"], "warning" if local_unknown else "block")
     return {"status": "needs_attention" if any(x["severity"] == "block" for x in issues) else "passed", "issues": issues}
 
 
-def validate_details(raw, result, asset):
+def validate_details(raw, result, asset, *, system_normalizations=()):
+    require(isinstance(system_normalizations, (list, tuple)) and all(isinstance(item, str) and item in SYSTEM_NORMALIZATIONS for item in system_normalizations)
+            and len(system_normalizations) == len(set(system_normalizations)), "系统规范化记录无效")
     require(isinstance(raw, dict) and set(raw) == DETAIL_FIELDS, "专项分析详情字段无效")
     require(isinstance(raw["profile"], str) and raw["profile"] in PROFILES, "专项分析规则无效")
     _text(raw["route_reason"], 1000)
@@ -168,7 +212,7 @@ def validate_details(raw, result, asset):
         require(isinstance(item, dict) and set(item) == {"field", "evidence", "action"}, "内容自查字段无效")
         for key in item:
             _text(item[key], 500)
-    return {**raw, "quality": quality_checks(raw, result)}
+    return {**raw, "quality": quality_checks(raw, result, system_normalizations)}
 
 
 def normalize_model_details(raw, result):
@@ -194,8 +238,9 @@ def normalize_model_details(raw, result):
                                  "applicability": result["design"]["applicability"], "limitations": result["design"]["limitations"]}}
 
 
-def bind_details(raw, result, asset, job, model, usage=None):
-    return {**validate_details(normalize_model_details(raw, result), result, asset), **versions(), "job_id": job["id"],
+def bind_details(raw, result, asset, job, model, usage=None, *, system_normalizations=()):
+    return {**validate_details(normalize_model_details(raw, result), result, asset, system_normalizations=system_normalizations),
+            **versions(), "job_id": job["id"], "system_normalizations": list(system_normalizations),
             "source": {"asset_id": asset["id"], "revision": job["revision"], "sha256": asset["sha256"], "input_binding": job["input_binding"]},
             "model_version": model, "usage": usage}
 
@@ -239,7 +284,7 @@ def require_publishable_details(db, job, asset):
         core = {key: details[key] for key in DETAIL_FIELDS}
         # Avoid treating edited current description as the historical model input.
         core = {**core, "source_statements": []}
-        verified = validate_details(core, suggestion, source_context)
+        verified = validate_details(core, suggestion, source_context, system_normalizations=details.get("system_normalizations", []))
         require(details["quality"] == verified["quality"] and verified["quality"]["status"] == "passed", "专项分析内容有疑点，需处理后发布")
     except (KeyError, TypeError, ValueError):
         raise Conflict("专项分析详情无效或已失效，不能自动发布") from None

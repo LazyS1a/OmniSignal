@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { request, purposeLabel, type Asset, type Suggestion, type DesignAnalysis } from './api';
 
-type Configuration = { configured: boolean; status: string; reason?: string; request_limit: number | null; unlimited?: boolean; used: number; backend?: string; model?: string };
+type Configuration = { configured: boolean; status: string; reason?: string; request_limit: number | null; unlimited?: boolean; used: number; backend?: string; model?: string; design_skills?: { enabled: boolean; daily_limit: number; used_and_reserved: number; quota_timezone: string } };
 type Job = { id: string; status: string; reason?: string; suggestion?: Suggestion };
 const designLabels: Record<keyof DesignAnalysis, string> = { palette: '配色', typography: '字体', composition: '构图与版式', hierarchy: '信息层级', imagery: '视觉手法', reusable_ideas: '可借鉴的方法', applicability: '适用场景', limitations: '证据与不确定项' };
 
@@ -36,6 +36,7 @@ export default function Analysis({ asset, canEdit, onAsset, onApply }: { asset: 
   <p className="muted">仅分析这张图片和必要说明。自动流程启用时，合格素材会自动收录；用途依据齐全后可按发布策略生成知识包。分析不会授予用途权限。</p>
   {config?.backend === 'nova' && <p className="muted">通过 Nova 的视觉理解服务分析；实际模型以本次分析结果为准。</p>}
   {config && <p className="analysis-status">{config.reason}<br />{config.request_limit === null ? <>无每日次数上限 · 今日已调用 {config.used} 次 · 按 UTC 日统计</> : <>今日模型请求 {config.used} / {config.request_limit} · 按 UTC 日重置</>}</p>}
+  {config?.design_skills?.enabled && <p className="muted">专项分析规则正在试运行：今日已用及预留 {config.design_skills.used_and_reserved} / {config.design_skills.daily_limit} 张，按 UTC 日统计。其余图片沿用原分析规则，采集目标不变。</p>}
   {asset.permissions.analysis !== 'allowed' && <p className="analysis-status">这张素材的模型分析权限尚未允许。管理员核对依据并保存权限后，才能提交分析。</p>}
   {!canEdit && <p className="muted">发起分析需要编辑权限。</p>}
   {error && <p className="analysis-error" role="alert">{error}</p>}

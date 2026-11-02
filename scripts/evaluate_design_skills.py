@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from PIL import Image, ImageDraw, ImageFont
 from omnisignal.knowledge.release import _lock
 from omnisignal.workbench.analysis import AnalysisService, HTTPAnalysisProvider, _result
-from omnisignal.workbench.design_skills import PROFILES, versions, normalize_model_details, validate_details
+from omnisignal.workbench.design_skills import PROFILES, versions, normalize_model_details, normalize_model_envelope, validate_details
 from omnisignal.workbench.store import Conflict, Store, require
 
 FIXTURE_VERSION = "design-self-owned-1"
@@ -182,13 +182,13 @@ def diagnose_response(path, lane, asset):
         output = json.loads(path.read_text(encoding="utf-8"))
         if lane == "skills":
             stage = "envelope"
-            require(isinstance(output, dict) and set(output) == {"result", "details"}, "专项分析响应缺少结果或详情")
+            result_output, details_output, normalizations = normalize_model_envelope(output)
             stage = "result"
-            result = _result(output["result"], asset["id"], require_taxonomy=True)
+            result = _result(result_output, asset["id"], require_taxonomy=True)
             stage = "normalize"
-            normalized = normalize_model_details(output["details"], result)
+            normalized = normalize_model_details(details_output, result)
             stage = "details"
-            validate_details(normalized, result, asset)
+            validate_details(normalized, result, asset, system_normalizations=normalizations)
         else:
             stage = "result"
             _result(output, asset["id"], require_taxonomy=True)

@@ -756,12 +756,12 @@ class AnalysisService:
                     receipt_db.execute("UPDATE analysis_jobs SET remote_job_id=? WHERE id=?", (remote_id, job["id"]))
             output = provider.analyze(context, image, receipt=receipt) if getattr(provider, "is_nova", False) else provider.analyze(context, image)
             try:
-                from .design_skills import bind_details, details_required
+                from .design_skills import bind_details, details_required, normalize_model_envelope
                 if details_required(job):
-                    require(isinstance(output, dict) and set(output) == {"result", "details"}, "专项分析响应缺少结果或详情")
-                    suggestion = _result(output["result"], asset["id"], require_taxonomy=True)
-                    details = bind_details(output["details"], suggestion, asset, job, provider.model_version,
-                                           getattr(provider, "last_usage", None))
+                    result_output, details_output, normalizations = normalize_model_envelope(output)
+                    suggestion = _result(result_output, asset["id"], require_taxonomy=True)
+                    details = bind_details(details_output, suggestion, asset, job, provider.model_version,
+                                           getattr(provider, "last_usage", None), system_normalizations=normalizations)
                 else:
                     suggestion = _result(output, asset["id"], require_taxonomy=getattr(provider, "requires_taxonomy", False))
             except (Conflict, KeyError, TypeError, ValueError, RecursionError):

@@ -181,3 +181,69 @@ def test_compact_output_expands_without_repeating_model_text():
     expanded["observations"][0]["text"] = "更换为其他图文字"
     with pytest.raises(Conflict):
         skills.validate_details(expanded, value["result"], {"title": "", "description": ""})
+
+
+@pytest.mark.parametrize("shape,code", [("nested", "envelope_nested_details"), ("flat", "envelope_flat_details")])
+def test_unambiguous_envelope_layout_is_normalized(prepared, shape, code):
+    value = envelope()
+    value = {"result": {**value["result"], "details": value["details"]}} if shape == "nested" else {**value["result"], "details": value["details"]}
+    store, asset, _, _, job, result = completed(prepared, value)
+    assert result["status"] == "completed"
+    assert result["details"]["system_normalizations"] == [code]
+    assert result["details"]["quality"]["status"] == "passed"
+    with store.db() as db:
+        row = dict(db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job["id"],)).fetchone())
+        assert skills.require_publishable_details(db, row, asset) is not None
+
+
+@pytest.mark.parametrize("shape", ["regular", "nested", "flat"])
+def test_missing_taxonomy_keeps_analysis_but_never_publishes(prepared, shape):
+    value = envelope()
+    del value["result"]["taxonomy"]
+    if shape == "nested":
+        value = {"result": {**value["result"], "details": value["details"]}}
+    elif shape == "flat":
+        value = {**value["result"], "details": value["details"]}
+    store, asset, provider, service, job, result = completed(prepared, value)
+    assert result["status"] == "completed" and provider.calls == 1
+    assert result["suggestion"]["kind"] == "uncertain"
+    assert result["suggestion"]["taxonomy"]["tags"] == {"industry": [], "medium": [], "task": []}
+    assert result["suggestion"]["design"] == envelope()["result"]["design"]
+    assert "taxonomy_missing" in result["details"]["system_normalizations"]
+    assert "taxonomy_missing" in {x["code"] for x in result["details"]["quality"]["issues"]}
+    assert result["details"]["quality"]["status"] == "needs_attention"
+    with store.db() as db:
+        row = dict(db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job["id"],)).fetchone())
+        with pytest.raises(Conflict):
+            skills.require_publishable_details(db, row, asset)
+
+
+@pytest.mark.parametrize("change", ["permission", "duplicate_details", "missing_design", "model_normalization", "invalid_taxonomy"])
+def test_envelope_normalization_does_not_accept_injection_or_ambiguity(prepared, change):
+    value = envelope()
+    if change == "permission":
+        value["result"]["permissions"] = {"display": "allowed"}
+    elif change == "duplicate_details":
+        value["result"]["details"] = deepcopy(value["details"])
+    elif change == "missing_design":
+        del value["result"]["design"]
+    elif change == "model_normalization":
+        value["details"]["system_normalizations"] = []
+    else:
+        value["result"]["taxonomy"] = None
+    *_, result = completed(prepared, value)
+    assert result["status"] == "failed" and result["failure_code"] == "response_schema_invalid"
+
+
+def test_brand_already_left_empty_is_warning_but_nonempty_claim_still_blocks(prepared):
+    value = envelope()
+    value["details"]["self_check"] = [{"field": "brand", "evidence": "图中未出现可辨识的品牌名称或商标", "action": "保持brand字段为空"}]
+    *_, result = completed(prepared, value)
+    quality = result["details"]["quality"]
+    assert quality["status"] == "passed"
+    assert quality["issues"][0]["code"] == "brand_unknown_retained" and quality["issues"][0]["severity"] == "warning"
+    canonical = skills.normalize_model_details(value["details"], value["result"])
+    value["result"]["brand"] = "Made Up"
+    quality = skills.validate_details(canonical, value["result"], {"title": "", "description": ""})["quality"]
+    assert quality["status"] == "needs_attention"
+    assert {x["code"] for x in quality["issues"]} >= {"brand_without_visible_text", "model_reported_issue"}
