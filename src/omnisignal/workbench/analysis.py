@@ -170,8 +170,8 @@ class HTTPAnalysisProvider:
         self.system_prompt = SYSTEM
         identity = {"endpoint": self.base_url, "model": model, "prompt": SYSTEM}
         if self.design_skills:
-            from .design_skills import PROMPT, PROVIDER_PREFIX, versions
-            self.system_prompt += PROMPT
+            from .design_skills import PROVIDER_PREFIX, system_prompt, versions
+            self.system_prompt = system_prompt(SYSTEM)
             identity.update(prompt=self.system_prompt, versions=versions())
         digest = hashlib.sha256(encode(identity).encode()).hexdigest()
         self.cache_identity = (PROVIDER_PREFIX if self.design_skills else "") + digest

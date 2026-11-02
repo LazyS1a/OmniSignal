@@ -19,17 +19,15 @@ def envelope(*, unknown=False, conflict=False):
     if unknown:
         result["reason"] += "包装具体材质无法确定。"
         result["taxonomy"]["note"] += "材质不确定不影响可见的版式。"
-    observations = [{"id": f"o{index + 1}", "field": field, "text": result["design"][field]}
+    observations = [{"id": f"o{index + 1}", "field": field}
                     for index, field in enumerate(list(result["design"])[:5])]
     details = {"profile": "packaging-analysis" if conflict else "static-ad-analysis",
                "route_reason": "画面以中央色块构成海报主体，四周留白。", "observations": observations,
                "source_statements": [],
-               "inferences": [{"field": field, "text": result["design"][field], "evidence_ids": ["o1", "o3"]}
+               "inferences": [{"field": field, "evidence_ids": ["o1", "o3"]}
                               for field in list(result["design"])[5:]],
                "unknowns": ["不能由图像确定印刷材质与真实传播效果。"],
-               "inspiration_card": {"task": "用单个色块和留白组织测试海报。", "method": result["design"]["reusable_ideas"],
-                                    "applicability": result["design"]["applicability"],
-                                    "limitations": result["design"]["limitations"], "evidence_ids": ["o1", "o3"]},
+               "inspiration_card": {"task": "用单个色块和留白组织测试海报。", "evidence_ids": ["o1", "o3"]},
                "self_check": []}
     return {"result": result, "details": details}
 

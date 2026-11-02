@@ -15,8 +15,8 @@ from .store import Conflict, encode, require
 
 SCHEMA_VERSION = 1
 SKILL_VERSION = "omni-design-1"
-PROMPT_VERSION = "omni-design-prompt-1"
-VALIDATOR_VERSION = "omni-design-check-1"
+PROMPT_VERSION = "omni-design-prompt-2"
+VALIDATOR_VERSION = "omni-design-check-2"
 PROVIDER_PREFIX = "design-v1:"
 OBSERVATION_FIELDS = ("palette", "typography", "composition", "hierarchy", "imagery")
 INFERENCE_FIELDS = ("reusable_ideas", "applicability", "limitations")
@@ -30,8 +30,9 @@ DETAIL_FIELDS = {"profile", "route_reason", "observations", "source_statements",
 CARD_FIELDS = {"task", "method", "applicability", "limitations", "evidence_ids"}
 
 PROMPT = """
-本任务启用专项设计分析。沿用前文 result 的八字段要求，但整个响应改成且仅为
-{"result":{旧八字段},"details":{如下字段}}，不要返回权限或人工审核结论。
+本任务启用专项设计分析。整个响应只能有result和details两个字段，形如
+{"result":{"purposes":[],"kind":"reference","reason":"...","description":"...","ocr_text":"","brand":"","design":{八项设计字段},"taxonomy":{分类字段}},"details":{如下字段}}。
+具体设计文字只在result.design写一次。不要返回权限或人工审核结论。
 details 字段必须完整且仅包含：
 profile：packaging-analysis / brand-visual-analysis / static-ad-analysis / general-analysis。
 route_reason：依据本张图说明所选主媒介。主要是包装则优先包装，广告目的保留在result.purposes；
@@ -40,11 +41,11 @@ route_reason：依据本张图说明所选主媒介。主要是包装则优先�
 静态广告包含poster或digital，且不包含packaging/identity。general允许无法确定。
 专项规则：
 """ + "\n".join(f"{key}: {rule}" for key, rule in PROFILES.items()) + """
-observations：恰好五项，{id,field,text}。id用o1至o5，field分别为palette、typography、composition、hierarchy、imagery，text必须与result.design相应文字完全相同，只写本图直接可见的具体颜色、相对位置、形状、字形等。
+observations：恰好五项，固定为[{"id":"o1","field":"palette"},{"id":"o2","field":"typography"},{"id":"o3","field":"composition"},{"id":"o4","field":"hierarchy"},{"id":"o5","field":"imagery"}]。不要加text；服务端会从result.design对应字段取得文字。该文字只描述本图可见内容。
 source_statements：0至8项{text,source_quote}；source_quote必须逐字来自本次title/description中的连续片段，text仅概括该片段，不升级为已证实事实。
-inferences：恰好三项{field,text,evidence_ids}，field分别为reusable_ideas、applicability、limitations，text与result.design相应文字完全相同；evidence_ids引用支持推断的observations.id，至少一项。不用来源陈述当图像证据。
+inferences：恰好三项{field,evidence_ids}，field分别为reusable_ideas、applicability、limitations；不要加text。evidence_ids引用支持该推断的observations.id，至少一项。不用来源陈述当图像证据。
 unknowns：0至10条明确的未知项。缺失工艺或效果等局部信息放这里，不影响可见部分的分析。
-inspiration_card：{task,method,applicability,limitations,evidence_ids}。task一句具体设计任务；method必须等于design.reusable_ideas，applicability和limitations分别等于design同名字段，evidence_ids列出支撑方法的观察id。
+inspiration_card：只含{task,evidence_ids}。task一句具体设计任务；evidence_ids列出支撑设计方法的观察id。不要重复method/applicability/limitations，服务端从result.design派生。
 self_check：0至8项{field,evidence,action}，仅列需要处理的具体矛盾或无依据主张；没有问题用[]。
 提交前对照图片检查：结果引用的是当前图吗？观察和推断对应吗？是否把材质、品牌、效果当事实？
 品牌无法从图中文字辨认则result.brand为空；实际销量、点击率、印刷工艺等没有证据则保留未知。
@@ -55,6 +56,13 @@ self_check：0至8项{field,evidence,action}，仅列需要处理的具体矛盾
 def versions():
     return {"schema_version": SCHEMA_VERSION, "skill_version": SKILL_VERSION,
             "prompt_version": PROMPT_VERSION, "validator_version": VALIDATOR_VERSION}
+
+
+def system_prompt(legacy):
+    """Remove the old root-object instruction instead of appending a conflict."""
+    old = "返回且仅返回一个 JSON 对象，不得包裹代码块或附加说明。字段必须且仅为："
+    require(old in legacy, "旧分析提示词结构已变化，需显式更新专项提示词")
+    return legacy.replace(old, "返回一个 JSON 对象，根字段只能是 result 和 details。不得包裹代码块或附加说明。result 对象的字段必须且仅为：", 1) + PROMPT
 
 
 def details_required(job):
@@ -163,8 +171,31 @@ def validate_details(raw, result, asset):
     return {**raw, "quality": quality_checks(raw, result)}
 
 
+def normalize_model_details(raw, result):
+    """Expand compact model output into the unchanged stored/UI contract.
+
+    Models never get to overwrite the legacy projection through repeated text.
+    Expanded records remain strictly checked at publication time.
+    """
+    require(isinstance(raw, dict) and set(raw) == DETAIL_FIELDS, "专项分析详情字段无效")
+    observations, inferences = [], []
+    for item in _items(raw["observations"], 5):
+        require(isinstance(item, dict) and set(item) == {"id", "field"}
+                and isinstance(item.get("field"), str) and item["field"] in OBSERVATION_FIELDS, "精简图像观察字段无效")
+        observations.append({**item, "text": result["design"][item["field"]]})
+    for item in _items(raw["inferences"], 3):
+        require(isinstance(item, dict) and set(item) == {"field", "evidence_ids"}
+                and isinstance(item.get("field"), str) and item["field"] in INFERENCE_FIELDS, "精简分析推断字段无效")
+        inferences.append({**item, "text": result["design"][item["field"]]})
+    card = raw["inspiration_card"]
+    require(isinstance(card, dict) and set(card) == {"task", "evidence_ids"}, "精简灵感卡字段无效")
+    return {**raw, "observations": observations, "inferences": inferences,
+            "inspiration_card": {**card, "method": result["design"]["reusable_ideas"],
+                                 "applicability": result["design"]["applicability"], "limitations": result["design"]["limitations"]}}
+
+
 def bind_details(raw, result, asset, job, model, usage=None):
-    return {**validate_details(raw, result, asset), **versions(), "job_id": job["id"],
+    return {**validate_details(normalize_model_details(raw, result), result, asset), **versions(), "job_id": job["id"],
             "source": {"asset_id": asset["id"], "revision": job["revision"], "sha256": asset["sha256"], "input_binding": job["input_binding"]},
             "model_version": model, "usage": usage}
 

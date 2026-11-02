@@ -18,8 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from PIL import Image, ImageDraw, ImageFont
 from omnisignal.knowledge.release import _lock
-from omnisignal.workbench.analysis import AnalysisService, HTTPAnalysisProvider
-from omnisignal.workbench.design_skills import PROFILES, versions
+from omnisignal.workbench.analysis import AnalysisService, HTTPAnalysisProvider, _result
+from omnisignal.workbench.design_skills import PROFILES, versions, normalize_model_details, validate_details
 from omnisignal.workbench.store import Conflict, Store, require
 
 FIXTURE_VERSION = "design-self-owned-1"
@@ -155,24 +155,69 @@ def summarize(manifest, ledger):
             "reserved_submissions": len(attempts), "maximum_paid_submissions": MAX_CALLS, "states": counts, "splits": groups,
             "human_quality_reviewed": None, "cost": None, "cost_note": "价格未配置；token usage 按实际响应记录，不能由token数捏造金额。",
             "uncertain_submission_blocks_new_calls": any(x.get("status") in {"reserved", "queued", "running", "waiting_remote"} for x in attempts.values()),
+            "stopped_reason": ledger.get("stopped_reason"), "lanes": ledger.get("lanes", ["legacy", "skills"]),
             "cases": [{**sample, "runs": {lane: attempts.get(sample["id"] + ":" + lane) for lane in ("legacy", "skills")}} for sample in manifest["samples"]]}
 
 
-def evaluate(output, *, allow_paid=False, max_calls=MAX_CALLS, factory=provider_factory):
+def baseline_comparison(directory, manifest):
+    """Read only already paid baseline records; never submit missing cases."""
+    directory = Path(directory)
+    baseline_manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    ledger_path = directory / "ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    require(baseline_manifest.get("fixture_version") == manifest["fixture_version"], "Baseline fixture version differs")
+    expected = {s["id"]: s["sha256"] for s in manifest["samples"]}
+    require({s["id"]: s["sha256"] for s in baseline_manifest["samples"]} == expected, "Baseline fixture images differ")
+    rows = {sample_id: ledger.get("attempts", {}).get(sample_id + ":legacy") for sample_id in expected}
+    return {"source_ledger_sha256": hashlib.sha256(ledger_path.read_bytes()).hexdigest(),
+            "completed": sum(row is not None and row.get("status") == "completed" for row in rows.values()),
+            "missing_or_incomplete": sum(row is None or row.get("status") != "completed" for row in rows.values()),
+            "additional_calls": 0, "cases": rows}
+
+
+def diagnose_response(path, lane, asset):
+    """Parse the captured synthetic response locally; no second request."""
+    stage = "json"
+    try:
+        output = json.loads(path.read_text(encoding="utf-8"))
+        if lane == "skills":
+            stage = "envelope"
+            require(isinstance(output, dict) and set(output) == {"result", "details"}, "专项分析响应缺少结果或详情")
+            stage = "result"
+            result = _result(output["result"], asset["id"], require_taxonomy=True)
+            stage = "normalize"
+            normalized = normalize_model_details(output["details"], result)
+            stage = "details"
+            validate_details(normalized, result, asset)
+        else:
+            stage = "result"
+            _result(output, asset["id"], require_taxonomy=True)
+        return {"stage": "validated", "reason": None}
+    except Conflict as error:
+        return {"stage": stage, "reason": str(error)}
+    except Exception as error:
+        return {"stage": stage, "error_type": type(error).__name__}
+
+
+def evaluate(output, *, allow_paid=False, max_calls=MAX_CALLS, factory=provider_factory, selected_lanes=("legacy", "skills"), baseline=None):
     output = Path(output).resolve()
     require(type(max_calls) is int and 1 <= max_calls <= MAX_CALLS, "max_calls must be 1..40")
+    require(isinstance(selected_lanes, (list, tuple)) and 1 <= len(selected_lanes) <= 2
+            and len(set(selected_lanes)) == len(selected_lanes) and all(x in {"legacy", "skills"} for x in selected_lanes), "lanes must be legacy,skills or one of them")
     output.mkdir(parents=True, exist_ok=True)
     with _lock(output / ".evaluation"):
         manifest = prepare(output)
         ledger_path = output / "ledger.json"
         require(ledger_path.exists() or not any((output / ("store-" + lane)).exists() for lane in ("legacy", "skills")), "Ledger missing beside existing evaluation stores; stop without resubmission")
-        ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else {"fixture_version": FIXTURE_VERSION, "attempts": {}}
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8")) if ledger_path.exists() else {"fixture_version": FIXTURE_VERSION, "attempts": {}, "lanes": list(selected_lanes)}
         require(ledger.get("fixture_version") == FIXTURE_VERSION and isinstance(ledger.get("attempts"), dict), "Invalid evaluation ledger")
+        require(ledger.get("lanes", list(selected_lanes)) == list(selected_lanes), "Evaluation lanes changed; use a new output directory")
+        baseline_result = baseline_comparison(baseline, manifest) if baseline is not None else None
         pending_previous = any(x.get("status") in {"reserved", "queued", "running", "waiting_remote"} for x in ledger["attempts"].values())
-        if allow_paid and not pending_previous:
+        if allow_paid and not pending_previous and not ledger.get("stopped_reason"):
             with isolated_limits():
                 lanes = {}
-                for lane in ("legacy", "skills"):
+                for lane in selected_lanes:
                     provider = factory(lane)
                     # Separate stores prevent rollout cache reuse from disguising
                     # a baseline comparison. These are new synthetic tasks only.
@@ -181,6 +226,8 @@ def evaluate(output, *, allow_paid=False, max_calls=MAX_CALLS, factory=provider_
                     lanes[lane] = (provider, store, service)
                 for sample in manifest["samples"]:
                     for lane, (provider, store, service) in lanes.items():
+                        if ledger.get("stopped_reason"):
+                            break
                         key = sample["id"] + ":" + lane
                         previous = ledger["attempts"].get(key)
                         if previous is not None:
@@ -204,7 +251,21 @@ def evaluate(output, *, allow_paid=False, max_calls=MAX_CALLS, factory=provider_
                         job = service.enqueue(asset["id"], asset["revision"], "synthetic-evaluation")
                         attempt.update(job_id=job["id"], status=job["status"])
                         write_json(ledger_path, ledger)
-                        result = service.run_pending()
+                        raw_path = output / (sample["id"] + "-" + lane + ".raw.json")
+                        original_fetch = getattr(provider, "_fetch", None)
+                        if original_fetch is not None:
+                            def capture(body):
+                                content = original_fetch(body)
+                                fd = os.open(str(raw_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                                    handle.write(content)
+                                return content
+                            provider._fetch = capture
+                        try:
+                            result = service.run_pending()
+                        finally:
+                            if original_fetch is not None:
+                                provider._fetch = original_fetch
                         require(result is not None and result["id"] == job["id"], "Unexpected evaluation queue; stop without retry")
                         details = result.get("details") or {}
                         attempt.update(status=result["status"], failure_code=result.get("failure_code"), charged=result["charged"],
@@ -212,8 +273,16 @@ def evaluate(output, *, allow_paid=False, max_calls=MAX_CALLS, factory=provider_
                                        profile_hit=(details["profile"] == sample["expected_profile"]) if result["status"] == "completed" and details else None,
                                        quality_status=details.get("quality", {}).get("status"),
                                        issues=[{"code": issue["code"], "field": issue["field"]} for issue in details.get("quality", {}).get("issues", [])])
+                        if raw_path.exists():
+                            attempt["diagnostic"] = diagnose_response(raw_path, lane, asset)
+                        if lane == "skills":
+                            failures = ledger.get("consecutive_skills_schema_failures", 0)
+                            ledger["consecutive_skills_schema_failures"] = failures + 1 if result.get("failure_code") == "response_schema_invalid" else 0
+                            if ledger["consecutive_skills_schema_failures"] >= 2:
+                                ledger["stopped_reason"] = "two_consecutive_skills_schema_failures"
                         write_json(ledger_path, ledger)
         report = summarize(manifest, ledger)
+        report["baseline_comparison"] = baseline_result
         write_json(output / "report.json", report)
         (output / "report.md").write_text(
             "# 专项分析技术评测\n\n20 张程序绘制的自有样本：12 张开发集、8 张保留集。\n\n"
@@ -227,14 +296,17 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("artifacts/private/design-skills-evaluation"))
     parser.add_argument("--allow-paid", action="store_true")
     parser.add_argument("--max-calls", type=int, default=MAX_CALLS)
+    parser.add_argument("--lanes", default="legacy,skills", help="legacy,skills (default), skills, or legacy")
+    parser.add_argument("--baseline", type=Path, help="Read existing paid legacy ledger from this evaluation directory")
     args = parser.parse_args()
     try:
-        report = evaluate(args.output, allow_paid=args.allow_paid, max_calls=args.max_calls)
+        report = evaluate(args.output, allow_paid=args.allow_paid, max_calls=args.max_calls,
+                          selected_lanes=tuple(args.lanes.split(",")), baseline=args.baseline)
     except Exception:
         # Keep provider errors, local paths and material bodies out of stdout.
         print(json.dumps({"status": "stopped", "reason": "evaluation_guard_or_configuration_failure", "automatic_retry": False}))
         return 1
-    print(json.dumps({key: report[key] for key in ("quality_scope", "reserved_submissions", "maximum_paid_submissions", "states", "splits")}, ensure_ascii=False))
+    print(json.dumps({key: report[key] for key in ("quality_scope", "reserved_submissions", "maximum_paid_submissions", "states", "splits", "stopped_reason", "lanes")}, ensure_ascii=False))
     return 0
 
 

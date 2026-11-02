@@ -21,9 +21,9 @@ def envelope(profile="packaging-analysis"):
     result = {"purposes": ["brand"], "kind": "reference", "reason": "图中可见容器正面文字与色块；系列变化属于设计推断。", "description": "本图以绿色与白色构成主体容器和文字层级。",
               "ocr_text": "", "brand": "", "design": design, "taxonomy": {"tags": {"industry": ["food-beverage"], "medium": [medium], "task": []}, "note": "图中可见容器主体和正面文字层级，来源说明仅作为辅助。"}}
     details = {"profile": profile, "route_reason": "本图以容器正面为主体，依据图中结构选择对应主媒介。",
-               "observations": [{"id": f"o{i+1}", "field": field, "text": design[field]} for i, field in enumerate(skills.OBSERVATION_FIELDS)],
-               "source_statements": [], "inferences": [{"field": field, "text": design[field], "evidence_ids": ["o1", "o3"]} for field in skills.INFERENCE_FIELDS],
-               "unknowns": ["实际工艺未知"], "inspiration_card": {"task": "用主色区分系列包装", "method": design["reusable_ideas"], "applicability": design["applicability"], "limitations": design["limitations"], "evidence_ids": ["o1", "o3"]}, "self_check": []}
+               "observations": [{"id": f"o{i+1}", "field": field} for i, field in enumerate(skills.OBSERVATION_FIELDS)],
+               "source_statements": [], "inferences": [{"field": field, "evidence_ids": ["o1", "o3"]} for field in skills.INFERENCE_FIELDS],
+               "unknowns": ["实际工艺未知"], "inspiration_card": {"task": "用主色区分系列包装", "evidence_ids": ["o1", "o3"]}, "self_check": []}
     return {"result": result, "details": details}
 
 
@@ -119,7 +119,6 @@ def test_content_issues_hold_without_technical_failure(prepared, change, code):
         value["details"]["self_check"] = [{"field": "composition", "evidence": "主体位置前后描述矛盾", "action": "对照当前图检查位置"}]
     else:
         value["result"]["design"]["imagery"] = "采用烫金工艺可以提高转化率百分之二十。"
-        value["details"]["observations"][4]["text"] = value["result"]["design"]["imagery"]
     *_, result = completed(prepared, value)
     assert result["status"] == "completed"
     assert result["details"]["quality"]["status"] == "needs_attention"
@@ -168,3 +167,17 @@ def test_prompt_versions_bind_identity_and_usage_from_provider_metadata(monkeypa
     assert len(bodies) == 1 and bodies[0]["max_tokens"] == 10000
     assert provider.last_usage == {"prompt_tokens": 123, "completion_tokens": 456, "total_tokens": 579}
     assert "general-analysis" in bodies[0]["messages"][0]["content"]
+    assert "返回且仅返回一个 JSON 对象，不得包裹代码块或附加说明。字段必须且仅为" not in bodies[0]["messages"][0]["content"]
+    assert "result 对象的字段必须且仅为" in bodies[0]["messages"][0]["content"]
+
+
+def test_compact_output_expands_without_repeating_model_text():
+    value = envelope()
+    expanded = skills.normalize_model_details(value["details"], value["result"])
+    assert expanded["observations"][0]["text"] == value["result"]["design"]["palette"]
+    assert expanded["inferences"][0]["text"] == value["result"]["design"]["reusable_ideas"]
+    assert expanded["inspiration_card"]["method"] == value["result"]["design"]["reusable_ideas"]
+    skills.validate_details(expanded, value["result"], {"title": "", "description": ""})
+    expanded["observations"][0]["text"] = "更换为其他图文字"
+    with pytest.raises(Conflict):
+        skills.validate_details(expanded, value["result"], {"title": "", "description": ""})
