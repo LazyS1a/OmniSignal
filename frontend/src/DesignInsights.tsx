@@ -11,19 +11,21 @@ export default function DesignInsights({ asset, details }: { asset: Asset; detai
  const card = quality?.inspiration_card || details?.inspiration_card;
  const profile = quality?.profile || details?.profile;
  const hasPermission = asset.publication_use_status === 'internal_policy' || (asset.permissions.display === 'allowed' && asset.permissions.export === 'allowed');
- const published = asset.publication_status === 'published', withdrawn = asset.publication_status === 'withdrawn';
+ const target = asset.publication_target;
+ const published = target ? target.status === 'published' : asset.publication_status === 'published', withdrawn = asset.publication_status === 'withdrawn' || target?.status === 'withdrawn';
  if (!details && (!quality || quality.status === 'legacy' && !asset.analysis_suggestion && !asset.reviewed_analysis)) return null;
  return <section className="design-insights" aria-labelledby="design-insights-title">
   <div className="insights-heading"><h3 id="design-insights-title">设计分析与灵感卡</h3>{profile && <span className="tag brand">{profiles[profile] || '设计分析'}</span>}</div>
   <ol className="insights-progress" aria-label="素材处理进度">
    <li><strong>AI 分析</strong><span>{stale ? '结果已过期' : details ? '已生成' : quality?.status === 'legacy' ? '历史分析' : '暂无新版详情'}</span></li>
    <li><strong>AI 内容初审</strong><span>{stale ? '需要更新依据' : quality?.status === 'passed' ? aiReviewed ? '通过 · 已收录' : '通过 · 待收录' : quality?.status === 'legacy' ? '沿用历史审核记录' : quality?.status === 'missing' ? '缺少质检记录' : '存在待处理项'}</span></li>
-   <li><strong>知识包</strong><span>{withdrawn ? '已永久撤回' : published ? '已生成 · 下游接收另查' : !hasPermission ? '待补用途依据' : '尚未发布'}</span></li>
+   <li><strong>{target?.kind === 'library' ? '公司灵感库' : '知识包'}</strong><span>{withdrawn ? '已永久撤回' : published ? '已生成 · 下游接收另查' : target?.status === 'stale' ? '交付后资料已变更' : target?.status === 'unavailable' ? '发布状态待核验' : target?.kind === 'library' ? '等待共享库出包' : !hasPermission ? '待补用途依据' : '尚未发布'}</span></li>
   </ol>
   {stale && <p className="analysis-error" role="status">素材或来源资料已更新。以下是历史分析，不能作为当前收录或发布依据。</p>}
   {withdrawn && <p className="analysis-error">该素材已永久撤回，分析结果不会使它重新进入发布流程。</p>}
   <p className="muted">AI 内容初审与人工审核分别记录。正常素材可按自动策略收录、发布；有疑点的素材留在待处理区。</p>
-  {asset.publication_use_status === 'internal_policy' && <p className="muted">本图按公司内部灵感库策略交付，用途记录与 AI 内容分析分别保存。</p>}
+  {target && <p className="muted">当前目标：{target.label}{target.version ? ` · 交付版本 ${target.version}` : ' · 尚无该目标的交付版本'}。下游是否接收以 DeepFlare 为准。</p>}
+  {asset.publication_use_status === 'internal_policy' && (!target || target.status === 'published') && <p className="muted">本图按内部用途策略交付，用途记录与 AI 内容分析分别保存。</p>}
   {details?.route_reason && <p className="muted">分析方向依据：{details.route_reason}</p>}
   {card && <div className={`inspiration-card${stale ? ' stale' : ''}`} aria-label={stale ? '历史灵感卡' : '灵感卡'}>
    <dl>{([['设计任务', card.task], ['可借鉴的方法', card.method], ['适用场景', card.applicability], ['使用边界', card.limitations]] as const).map(([label, text]) => <div key={label}><dt>{label}</dt><dd>{text || '尚无可靠结论'}</dd></div>)}</dl>

@@ -27,14 +27,18 @@ from .review import DESIGN_FIELDS, fresh_review
 from .taxonomy import fresh_taxonomy
 from .store import Conflict, asset_from_row, encode, require, stamp
 from omnisignal.knowledge.taxonomy import TAXONOMY_VERSION
-from .publication_use import delivery_projection, validate_policy
+from .publication_use import delivery_projection, validate_policy, library_recipient, target_delivered, ensure_table
+from .library_publication import base_root, target_root, require_library_target, publication_targets
+from omnisignal.knowledge.scope import recipient_key, envelope_recipient
 PURPOSES = {"brand", "conversion"}
 CHECKPOINT_CHAIN_LIMIT = 16
 
 
-def publication_snapshot_ids(items):
+def publication_snapshot_ids(items, recipient=None):
     """Current and legacy stable IDs for the same frozen asset snapshots."""
     identity = [[item["id"], item["revision"], item["sha256"]] for item in sorted(items, key=lambda item: item["id"])]
+    if recipient is not None:
+        identity = {"recipient": recipient, "assets": identity}
     identity_hash = hashlib.sha256(encode(identity).encode()).hexdigest()
     return "wb-" + identity_hash[:32], "wb-" + identity_hash[:48]
 
@@ -196,7 +200,7 @@ def _prepare_asset(asset: dict, stage: Path) -> dict:
     return case
 
 
-def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id=None, before_sign=None) -> dict:
+def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id=None, before_sign=None, recipient=None) -> dict:
     """Publish all supplied assets or fail; retain prior releases via deltas.
 
     ``root`` is the publication root. The signing key must be supplied separately
@@ -253,6 +257,7 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
             requested_count = len(records)
             if publication_id is not None and (root / "releases" / release_id).exists():
                 prior, prior_records = verify_release(root / "releases" / release_id, {key_id: private_key.public_key()})
+                _require(envelope_recipient(prior) == recipient, "publication recovery recipient mismatch")
                 prior_by_id = {record["case_id"]: record for record in prior_records}
                 _require(all(prior_by_id.get(record["case_id"]) == record for record in records), "publication recovery content conflict")
                 _require(prior["kind"] == "full" or prior_records == records, "publication recovery content conflict")
@@ -261,6 +266,7 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
                 sequence, kind, parent = prior["sequence"], prior["kind"], prior["parent_release_id"]
             elif latest is not None:
                 chain = _verified_chain(root, key_id, private_key)
+                _require(all(envelope_recipient(manifest) == recipient for manifest, _, _ in chain), "publication chain recipient mismatch")
                 if len(chain) >= CHECKPOINT_CHAIN_LIMIT:
                     merged, locations = {}, {}
                     for _manifest, prior_records, directory in reversed(chain):
@@ -289,9 +295,11 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
                 asset_root=stage, private_key=private_key, key_id=key_id,
                 kind=kind, parent_release_id=parent,
                 taxonomy_version=TAXONOMY_VERSION,
+                recipient=recipient,
             )
             manifest_sha256 = digest((root / "releases" / release_id / "manifest.json").read_bytes())
     return {"version": release_id, "release_id": release_id, "sequence": sequence,
+            **({"recipient": recipient} if recipient is not None else {}),
             "status": "published", "receipt_status": "unconfirmed",
             "manifest_sha256": manifest_sha256, "assets_count": len(records),
             "requested_assets_count": requested_count, "kind": kind,
@@ -313,30 +321,39 @@ def publish_store_assets(store, asset_ids, actor, *, expected_revisions=None,
     require(not automated_only or actor == "system:auto-editorial", "invalid_automated_actor")
     require(publication_policy is None or automated_only, "internal_publication_requires_automated_review")
     publication_policy = validate_policy(publication_policy)
+    recipient = library_recipient(publication_policy)
+    root = target_root(store, publication_policy, publication_root)
     def check_policy():
         if policy_loader is not None:
             current = policy_loader()
             require(current and current["enabled"] and current["auto_publish"]
                     and current.get("publication_authorized") == publication_policy, "publication_policy_changed")
-    root = Path(publication_root or os.getenv("OMNISIGNAL_KNOWLEDGE_DIR", str(store.root / "published")))
+        if recipient is not None:
+            require_library_target(root, publication_policy)
     with store.db() as db:
         db.execute("BEGIN IMMEDIATE")
+        if recipient is not None:
+            ensure_table(db)
         check_policy()
+        globally_withdrawn = set().union(*(_withdrawn(directory) for directory, _ in publication_targets(base_root(store, publication_root))))
+        require(not (set(asset_ids) & globally_withdrawn), "素材已有永久撤回签名，不能重新发布")
         # A checkpoint carries the already published inventory forward. Refuse
         # to carry cases whose current source record lost its use basis.
         for case_id, signed_case in materialize_release(root).items():
+            require(case_id not in globally_withdrawn, "存在尚未完成的跨目标撤回，暂停发布")
             prior_row = db.execute("SELECT * FROM assets WHERE id=?", (case_id,)).fetchone()
             require(prior_row is not None, "已发布素材的本地用途记录缺失，暂停发布")
             prior_asset = asset_from_row(prior_row, strict=True)
             require(prior_asset.get("status") == "accepted" and prior_asset.get("publication_status") != "withdrawn",
                     "已发布素材用途状态已变化，需先处理撤回")
             recovering = (case_id in asset_ids and automated_only and publication_policy is not None
-                          and prior_asset.get("publication_status") != "published")
+                          and (not target_delivered(db, prior_asset, recipient) if recipient is not None
+                               else prior_asset.get("publication_status") != "published"))
             if recovering:
                 from .review import validate_automated_quality
                 validate_automated_quality(db, prior_asset)
             prior_projected = delivery_projection(store, db, prior_asset, policy=publication_policy if recovering else None,
-                                                 create=recovering)
+                                                 create=recovering, recipient=recipient)
             signed_basis = signed_case.get("editorial", {}).get("publication_use_basis")
             require(signed_basis == prior_projected.get("publication_use_basis"), "已发布素材用途依据已变化，需先处理撤回")
         selected = []
@@ -362,29 +379,34 @@ def publish_store_assets(store, asset_ids, actor, *, expected_revisions=None,
                                         create=automated_only and publication_policy is not None)
             asset["image_path"] = str(store.images / asset["image_file"])
             selected.append(asset)
-        publication_id, legacy_id = publication_snapshot_ids(selected)
+        publication_id, legacy_id = publication_snapshot_ids(selected, recipient)
         # Short names fit ordinary Windows checkout/test roots. A saved old
         # receipt or immutable directory still owns its previous identity;
         # changing formats must not publish a second batch after an upgrade.
         if (root / "releases" / legacy_id).is_dir() or db.execute("SELECT 1 FROM releases WHERE version=?", (legacy_id,)).fetchone():
             publication_id = legacy_id
         existing = db.execute("SELECT document FROM releases WHERE version=?", (publication_id,)).fetchone()
-        if existing is not None and all(item.get("publication_status") == "published"
-                                        and item.get("publication_version") == publication_id for item in selected):
+        if existing is not None and all(target_delivered(db, item, recipient) if recipient is not None else
+                                        item.get("publication_status") == "published" and item.get("publication_version") == publication_id for item in selected):
             return {**json.loads(existing[0]), "replayed": True}
         check_policy()
-        result = publish_assets(root, selected, actor, publication_id=publication_id, before_sign=check_policy)
+        result = publish_assets(root, selected, actor, publication_id=publication_id, before_sign=check_policy, recipient=recipient)
         db.execute("INSERT OR IGNORE INTO releases VALUES(?,?,?)", (result["version"], encode(result), stamp()))
         for item in originals.values():
+            if recipient is not None:
+                db.execute("INSERT OR IGNORE INTO publication_target_deliveries VALUES(?,?,?,?)",
+                           (item["id"], item["revision"], recipient_key(recipient), result["version"]))
+                continue
             item["publication_status"], item["publication_version"] = "published", result["version"]
             require(db.execute("UPDATE assets SET document=? WHERE id=? AND revision=?",
                                (encode(item), item["id"], item["revision"])).rowcount == 1, "发布时素材版本已变化")
         store.audit(db, result["version"], actor, "publish", {"assets": asset_ids,
+                    **({"recipient": recipient} if recipient is not None else {}),
                     "receipt_status": "unconfirmed", "review_method": "automated" if automated_only else "explicit"})
         return result
 
 
-def withdraw_assets(root: Path, assets: list[dict], actor: str, reason: str) -> dict:
+def withdraw_assets(root: Path, assets: list[dict], actor: str, reason: str, *, recipient=None) -> dict:
     """Permanently revoke published case IDs using the existing signed protocol.
 
     Signing finishes before a caller changes local editorial state. There is no
@@ -413,9 +435,35 @@ def withdraw_assets(root: Path, assets: list[dict], actor: str, reason: str) -> 
         previous = [int(path.stem) for path in (root / "withdrawals").glob("*.json")]
         sequence = max(previous, default=0) + 1
         signed = publish_withdrawals(root=root, sequence=sequence, case_ids=ids,
-                                     private_key=private_key, key_id=key_id)
+                                     private_key=private_key, key_id=key_id, recipient=recipient)
         sha = digest((root / "withdrawals" / f"{sequence}.json").read_bytes())
-    return {"version": f"withdrawal-{sequence}", "sequence": sequence, "status": "withdrawn",
+    return {"version": f"withdrawal-{sequence}" if recipient is None else f"withdrawal-{recipient_key(recipient)[:16]}-{sequence}",
+            **({"recipient": recipient} if recipient is not None else {}), "sequence": sequence, "status": "withdrawn",
             "receipt_status": "unconfirmed", "permanent": True, "asset_ids": ids,
             "assets_count": len(ids), "withdrawal_sha256": sha, "key_id": key_id,
             "cumulative_count": len(signed["case_ids"]), "reason": reason.strip()}
+
+
+def withdraw_publication_targets(root, assets, actor, reason):
+    """An explicit source withdrawal reaches every previously delivered target.
+
+    Completed signatures stay authoritative if a later target fails. A caller
+    receives an error, never a success for a partial withdrawal; retrying this
+    explicit action is safe and does not involve analysis/model jobs.
+    """
+    from .library_publication import publication_targets
+    targets, covered = [], set()
+    for directory, recipient in publication_targets(root):
+        history = _history(directory)
+        selected = [asset for asset in assets if asset["id"] in history]
+        if selected:
+            targets.append((directory, recipient, selected))
+            covered.update(asset["id"] for asset in selected)
+    require(covered == {asset["id"] for asset in assets}, "选中素材没有可撤回的签名发布记录")
+    results = [withdraw_assets(directory, selected, actor, reason, recipient=recipient)
+               for directory, recipient, selected in targets]
+    if len(results) == 1:
+        return results[0]
+    return {"version": "withdrawal-set-" + hashlib.sha256(encode([result["version"] for result in results]).encode()).hexdigest()[:24],
+            "status": "withdrawn", "receipt_status": "unconfirmed", "permanent": True,
+            "asset_ids": sorted(covered), "assets_count": len(covered), "targets": results, "reason": reason.strip()}

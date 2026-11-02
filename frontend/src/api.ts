@@ -30,6 +30,7 @@ export type Asset = {
  width?: number; height?: number; status: Status; purposes: Purpose[]; kind: string; reason?: string;
  description?: string; ocr_text?: string; permissions: Permissions; revision: number; created_at?: string; project_id?: string; analysis_suggestion?: Suggestion; analysis_suggestion_revision?: number; analysis_suggestion_job_id?: string | null; reviewed_analysis?: ReviewedAnalysis; reviewed_analysis_status?: 'none' | 'current' | 'stale'; publication_status?: 'published' | 'withdrawn'; publication_use_status?: 'internal_policy' | 'stale' | 'original_permissions';
  reviewed_taxonomy?: ReviewedTaxonomy; reviewed_taxonomy_status?: 'none' | 'current' | 'stale';
+ publication_target?: { kind: 'library' | 'unknown'; library_id?: string; label: string; status: 'not_published' | 'published' | 'withdrawn' | 'stale' | 'unavailable'; version?: string; delivered_revision?: number; has_published_history?: boolean; receipt_status: 'unconfirmed' };
  analysis_job_id?: string; analysis_status?: string; analysis_details?: AnalysisDetails | null; analysis_details_status?: 'none' | 'current' | 'missing' | 'stale'; analysis_quality?: AnalysisQuality; processing_group?: ProcessingGroup;
  audit?: Array<{ action?: string; actor?: string; at?: string; created_at?: string; reason?: string }>;
 };

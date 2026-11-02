@@ -245,13 +245,18 @@ def describe_review(asset, db=None):
     result.update(describe_quality(asset, db))
     result["publication_use_status"] = "original_permissions"
     if db is not None:
-        from .publication_use import existing_basis
+        from .publication_use import existing_basis, describe_current_target
+        target = describe_current_target(db, asset)
+        if target is not None:
+            result["publication_target"] = target
         try:
             if existing_basis(db, asset) is not None:
                 validate_automated_quality(db, asset)
                 result["publication_use_status"] = "internal_policy"
         except (Conflict, ValueError, KeyError, TypeError):
             result["publication_use_status"] = "stale"
+        if target and target["status"] == "published":
+            result["publication_use_status"] = "internal_policy"
     return result
 
 

@@ -23,6 +23,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from PIL import Image
+from .scope import envelope_recipient, validate_library_recipient
 
 MAX_RECORD_BYTES = 1024 * 1024
 MAX_RECORDS = 2000
@@ -92,6 +93,49 @@ def _identifier(value: object) -> str:
 def _integer(value: object) -> int:
     _require(type(value) is int and value >= 1, "sequence/revision must be a positive integer")
     return value
+
+
+def _scope(value):
+    try:
+        return envelope_recipient(value)
+    except (TypeError, ValueError) as exc:
+        raise KnowledgeError("invalid signed recipient") from exc
+
+
+def _record_scope(record, recipient):
+    if record.get("op") != "upsert":
+        return
+    case = record["case"]
+    basis = case.get("editorial", {}).get("publication_use_basis")
+    if recipient is None:
+        _require(not isinstance(basis, dict) or basis.get("schema_version") != 2, "library case requires scoped manifest")
+        return
+    _require(isinstance(basis, dict) and type(basis.get("schema_version")) is int
+             and basis["schema_version"] == 2 and basis.get("recipient") == recipient, "case recipient mismatch")
+    _require(set(basis) == {"schema_version", "policy_id", "policy_sha256", "purpose", "authorized_at", "source_id",
+                           "asset_id", "revision", "sha256", "input_binding", "recipient", "authorization_source"},
+             "invalid library use basis")
+    _identifier(basis.get("policy_id")); _identifier(basis.get("source_id"))
+    _require(basis.get("purpose") == "company_internal_inspiration" and basis.get("authorization_source") == "operator_policy"
+             and all(isinstance(basis.get(field), str) and re.fullmatch("[a-f0-9]{64}", basis[field])
+                     for field in ("policy_sha256", "input_binding")), "invalid library use basis")
+    try:
+        _require(isinstance(basis.get("authorized_at"), str)
+                 and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", basis["authorized_at"])
+                 and datetime.fromisoformat(basis["authorized_at"]).tzinfo is not None, "invalid library authorization time")
+    except (TypeError, ValueError) as exc:
+        raise KnowledgeError("invalid library authorization time") from exc
+    _require(basis.get("asset_id") == case["case_id"] and basis.get("revision") == case["revision"]
+             and type(basis.get("revision")) is int
+             and len(case["images"]) == 1 and isinstance(basis.get("sha256"), str)
+             and re.fullmatch("[a-f0-9]{64}", basis["sha256"])
+             and re.fullmatch(r"images/" + basis["sha256"] + r"\.(?:png|jpe?g|webp)", case["images"][0]["path"]),
+             "library case source binding mismatch")
+
+
+def _same_root_scope(root, recipient):
+    for path in [*_release_manifests(root), *_withdrawal_files(root)]:
+        _require(_scope(_load(path)) == recipient, "publication root recipient mismatch")
 
 
 def _relative(value: object) -> str:
@@ -256,7 +300,7 @@ def verify_release(directory: Path | str, trusted_keys: dict[str, Ed25519PublicK
     directory = Path(directory)
     manifest = _load(_file(directory, "manifest.json"))
     verify_signature(manifest, trusted_keys)
-    _require(type(manifest.get("schema_version")) is int and manifest["schema_version"] == 1, "unsupported schema")
+    recipient = _scope(manifest)
     _identifier(manifest.get("release_id"))
     _integer(manifest.get("sequence"))
     _text(manifest.get("created_at"), "created_at")
@@ -301,6 +345,11 @@ def verify_release(directory: Path | str, trusted_keys: dict[str, Ed25519PublicK
             _require(len(line) <= MAX_RECORD_BYTES + 1, "oversized record")
             record = _decode(line)
             refs |= _record(record)
+            _record_scope(record, recipient)
+            if recipient is not None and record["op"] == "upsert":
+                case = record["case"]
+                hashes = {entry["path"]: entry["sha256"] for entry in files}
+                _require(hashes.get(case["images"][0]["path"]) == case["editorial"]["publication_use_basis"]["sha256"], "library image binding mismatch")
             _require(record["case_id"] not in identities, "duplicate case in release")
             identities.add(record["case_id"])
             records.append(record)
@@ -453,18 +502,21 @@ def materialize_release(root: Path | str, release_id: str | None = None) -> dict
     return cases
 
 
-def publish_release(*, root: Path | str, release_id: str, sequence: int, records: list[dict], asset_root: Path | str, private_key: Ed25519PrivateKey, key_id: str, kind: str = "full", parent_release_id: str | None = None, taxonomy_version: str = "1", created_at: str | None = None) -> dict:
+def publish_release(*, root: Path | str, release_id: str, sequence: int, records: list[dict], asset_root: Path | str, private_key: Ed25519PrivateKey, key_id: str, kind: str = "full", parent_release_id: str | None = None, taxonomy_version: str = "1", created_at: str | None = None, recipient=None) -> dict:
     root, asset_root = Path(root), Path(asset_root)
     _identifier(release_id)
+    recipient = validate_library_recipient(recipient) if recipient is not None else None
     _integer(sequence)
     _require(kind in {"full", "delta"}, "invalid release kind")
     _require(isinstance(records, list) and len(records) <= MAX_RECORDS, "invalid records")
     refs, ids = set(), set()
     for record in records:
         refs |= _record(record)
+        _record_scope(record, recipient)
         _require(record["case_id"] not in ids, "duplicate case in release")
         ids.add(record["case_id"])
     with _lock(root):
+        _same_root_scope(root, recipient)
         releases = _file(root, "releases")
         releases.mkdir(exist_ok=True)
         target = _file(root, f"releases/{release_id}")
@@ -522,7 +574,9 @@ def publish_release(*, root: Path | str, release_id: str, sequence: int, records
                     previous_hashes = historical[1]
                     current_hashes = {name: file_hashes[name] for name in _record(record)}
                     _require(current_hashes == previous_hashes, "case image evidence changed; increase revision")
-            payload = {"schema_version": 1, "release_id": release_id, "sequence": sequence, "kind": kind, "parent_release_id": parent_release_id, "created_at": created_at or utc_stamp(), "taxonomy_version": taxonomy_version, "records_count": len(records), "files": files}
+            payload = {"schema_version": 2 if recipient is not None else 1, "release_id": release_id, "sequence": sequence, "kind": kind, "parent_release_id": parent_release_id, "created_at": created_at or utc_stamp(), "taxonomy_version": taxonomy_version, "records_count": len(records), "files": files}
+            if recipient is not None:
+                payload["recipient"] = recipient
             manifest = _signed(payload, private_key, key_id)
             _atomic_json(stage / "manifest.json", manifest)
             verify_release(stage, {key_id: private_key.public_key()})
@@ -534,12 +588,14 @@ def publish_release(*, root: Path | str, release_id: str, sequence: int, records
                 shutil.rmtree(stage)
 
 
-def publish_withdrawals(*, root: Path | str, sequence: int, case_ids: list[str], private_key: Ed25519PrivateKey, key_id: str) -> dict:
+def publish_withdrawals(*, root: Path | str, sequence: int, case_ids: list[str], private_key: Ed25519PrivateKey, key_id: str, recipient=None) -> dict:
     root = Path(root)
+    recipient = validate_library_recipient(recipient) if recipient is not None else None
     _integer(sequence)
     _require(isinstance(case_ids, list) and bool(case_ids) and len(case_ids) <= MAX_RECORDS, "withdrawal cases required")
     ids = sorted({_identifier(case_id) for case_id in case_ids})
     with _lock(root):
+        _same_root_scope(root, recipient)
         directory = _file(root, "withdrawals")
         directory.mkdir(exist_ok=True)
         target = _file(root, f"withdrawals/{sequence}.json")
@@ -555,7 +611,10 @@ def publish_withdrawals(*, root: Path | str, sequence: int, case_ids: list[str],
         previous = [int(p.stem) for p in _withdrawal_files(root)]
         _require(sequence == max(previous, default=0) + 1, "withdrawal sequence must be consecutive")
         cumulative = sorted(_withdrawn(root) | set(ids))
-        payload = _signed({"schema_version": 1, "sequence": sequence, "created_at": utc_stamp(), "case_ids": cumulative}, private_key, key_id)
+        value = {"schema_version": 2 if recipient is not None else 1, "sequence": sequence, "created_at": utc_stamp(), "case_ids": cumulative}
+        if recipient is not None:
+            value["recipient"] = recipient
+        payload = _signed(value, private_key, key_id)
         _require(len(canonical(payload)) <= MAX_RECORD_BYTES, "withdrawal inventory too large")
         _atomic_json(target, payload)
         return payload

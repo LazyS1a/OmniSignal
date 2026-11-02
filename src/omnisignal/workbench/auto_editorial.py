@@ -16,12 +16,14 @@ from pathlib import Path
 import re
 import threading
 
-from omnisignal.knowledge.release import KnowledgeError, _lock
+from omnisignal.knowledge.release import KnowledgeError, _lock, read_latest
 from .publishing import publish_store_assets, publication_snapshot_ids
 from .review import apply_automated_review, fresh_review, validate_automated_quality
 from .store import Conflict, asset_row_consistent, encode, require, stamp
 from .taxonomy import fresh_taxonomy
-from .publication_use import ensure_table, permits_internal_delivery, validate_policy
+from .publication_use import ensure_table, permits_internal_delivery, validate_policy, library_recipient, target_delivered
+from .library_publication import target_root
+from omnisignal.knowledge.scope import recipient_key
 
 ACTOR = "system:auto-editorial"
 CONFIG_ENV = "OMNISIGNAL_WORKBENCH_AUTO_EDITORIAL_CONFIG"
@@ -81,6 +83,10 @@ class AutoEditorial:
     def _quality_fingerprint(self, db, job):
         from .design_skills import details_digest, get_analysis_details, versions
         return details_digest({"details": get_analysis_details(db, job["id"]), "validator": versions()})
+
+    def _publication_batch_key(self, config):
+        recipient = library_recipient(config.get("publication_authorized"))
+        return "auto_editorial_publication_batch" + (":" + recipient_key(recipient) if recipient is not None else "")
 
     def configuration(self):
         if self._config is None and self.policy_path is None:
@@ -187,19 +193,22 @@ class AutoEditorial:
                     stale = True
         if not stale:
             return False
-        root = Path(self.publication_root or os.getenv("OMNISIGNAL_KNOWLEDGE_DIR", str(self.store.root / "published")))
-        ids = publication_snapshot_ids(batch)
+        recipient = library_recipient(config.get("publication_authorized"))
+        root = target_root(self.store, config.get("publication_authorized"), self.publication_root)
+        ids = publication_snapshot_ids(batch, recipient)
         with _lock(root / ".workbench"), _lock(root):
             if any((root / "releases" / value).exists() or (root / "releases" / value).is_symlink()
                    or db.execute("SELECT 1 FROM releases WHERE version=?", (value,)).fetchone() for value in ids):
                 return False
-            deleted = db.execute("DELETE FROM meta WHERE key='auto_editorial_publication_batch' AND value=?", (encode(batch),))
+            deleted = db.execute("DELETE FROM meta WHERE key=? AND value=?", (self._publication_batch_key(config), encode(batch)))
             if deleted.rowcount:
                 self.store.audit(db, ids[0], ACTOR, "unsigned_publication_cancelled",
                                  {"assets": [item["id"] for item in batch], "reason": "source_snapshot_changed"})
             return bool(deleted.rowcount)
 
     def _tick_locked(self, config):
+        recipient = library_recipient(config.get("publication_authorized"))
+        batch_key = self._publication_batch_key(config)
         result = {"status": "ready", "at": stamp(), "actor": ACTOR, "authorized": self._authorize(config),
                   "reviewed": 0, "published": 0, "blocked": 0, "human_reviewed": None,
                   "receipt_status": "unconfirmed", "releases": []}
@@ -268,8 +277,13 @@ class AutoEditorial:
                     continue
             if asset.get("reviewed_analysis", {}).get("provenance") != "model_automated_review":
                 continue
-            if asset.get("publication_status") == "published":
-                continue
+            if recipient is None:
+                if asset.get("publication_status") == "published":
+                    continue
+            else:
+                with self.store.db() as db:
+                    if target_delivered(db, asset, recipient):
+                        continue
             try:
                 fresh_review(asset)
                 fresh_taxonomy(asset)
@@ -291,12 +305,12 @@ class AutoEditorial:
             # reconciles that same batch even if more images arrived meanwhile.
             with self.store.db() as db:
                 db.execute("BEGIN IMMEDIATE")
-                pending = db.execute("SELECT value FROM meta WHERE key='auto_editorial_publication_batch'").fetchone()
+                pending = db.execute("SELECT value FROM meta WHERE key=?", (batch_key,)).fetchone()
                 batch = json.loads(pending[0]) if pending else publishable
                 if pending and self._discard_unsigned_stale_batch(db, batch, config):
                     pending, batch = None, publishable
                 if batch and not pending:
-                    db.execute("INSERT INTO meta(key,value) VALUES('auto_editorial_publication_batch',?)", (encode(batch),))
+                    db.execute("INSERT INTO meta(key,value) VALUES(?,?)", (batch_key, encode(batch)))
             if batch:
                 try:
                     require(all((self.store.asset(item["id"]) or {}).get("source_id") in config["source_ids"] for item in batch),
@@ -306,7 +320,7 @@ class AutoEditorial:
                         publication_root=self.publication_root,
                         publication_policy=config.get("publication_authorized"), policy_loader=self.configuration)
                     with self.store.db() as db:
-                        db.execute("DELETE FROM meta WHERE key='auto_editorial_publication_batch' AND value=?", (encode(batch),))
+                        db.execute("DELETE FROM meta WHERE key=? AND value=?", (batch_key, encode(batch)))
                     result["releases"].append(receipt)
                     result["published"] = 0 if receipt.get("replayed") else len(batch)
                 except (Conflict, KnowledgeError, OSError, ValueError, TypeError):
@@ -350,7 +364,12 @@ class AutoEditorial:
                     permission_blocked += int(not permits_internal_delivery(asset, config.get("publication_authorized") if config else None))
             today = {"date": day, "timezone": "Asia/Shanghai", **{name: len(values) for name, values in counts.items()},
                      "awaiting_review": awaiting, "permission_blocked": permission_blocked, "human_reviewed": None}
+            recipient = library_recipient(config.get("publication_authorized")) if config else None
+            delivered = db.execute("SELECT count(*) FROM publication_target_deliveries WHERE recipient_key=?",
+                                   (recipient_key(recipient),)).fetchone()[0] if recipient is not None else None
+            target_latest = read_latest(target_root(self.store, config.get("publication_authorized"), self.publication_root)) if recipient is not None else None
         return {"status": state, "actor": ACTOR, "source_ids": config["source_ids"] if config else [],
+                "publication_recipient": recipient, "target_delivered_revisions": delivered, "target_latest_release": target_latest,
                 "auto_publish": bool(config and config["auto_publish"]),
                 "publication_authorized": bool(config and config.get("publication_authorized")),
                 "analysis_authorized": bool(config and config["analysis_authorized"]),

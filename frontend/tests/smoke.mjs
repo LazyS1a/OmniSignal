@@ -221,11 +221,14 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
   // Read-only response fixture tests the model provenance label only. It does
   // not persist an AI review, call a model, or claim provider acceptance.
   const automatedRoute = `${base}/workbench/api/assets/${reference.id}`;
+  let sharedFixturePublished = true;
   await page.route(automatedRoute, async route => {
    check(route.request().method() === 'GET', 'automated-provenance-fixture-is-read-only');
    const response = await route.fetch();
    const data = await response.json();
    data.reviewed_analysis = { ...data.reviewed_analysis, provenance: 'model_automated_review', model_version: 'synthetic-ui-model' };
+   data.publication_status = sharedFixturePublished ? undefined : 'published';
+   data.publication_target = { kind: 'library', library_id: 'synthetic-library', label: 'DeepFlare 公司灵感库', status: sharedFixturePublished ? 'published' : 'not_published', version: sharedFixturePublished ? 'synthetic-library-release' : undefined, has_published_history: sharedFixturePublished, receipt_status: 'unconfirmed' };
    await route.fulfill({ response, json: data });
   });
   await page.getByRole('heading', { name: title, exact: true }).click();
@@ -233,6 +236,14 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
   await modal.locator('summary').filter({ hasText: '自动 AI 复核的设计分析' }).click();
   check(await modal.getByText('AI 已初审 · 当前版本', { exact: true }).isVisible() && await modal.getByText(/自动 AI 复核（synthetic-ui-model），未经人工逐项复核/).isVisible(), 'automated-origin-title-and-body-never-claim-human-review');
   check(await modal.locator('summary').filter({ hasText: '人工审阅的设计分析' }).count() === 0 && !await modal.getByRole('checkbox', { name: '我已逐项核对摘要、设计分析与依据类型，确认本次保存为人工审核版', exact: true }).isChecked(), 'automatic-review-does-not-preconfirm-human-review');
+  check(await modal.getByText(/当前目标：DeepFlare 公司灵感库 · 交付版本 synthetic-library-release/).isVisible(), 'shared-target-and-version-visible-without-source-publication-marker');
+  check(await modal.getByRole('button', { name: '撤回发布', exact: true }).isVisible(), 'shared-only-delivery-can-use-withdraw-action');
+  await modal.getByRole('button', { name: '关闭', exact: true }).click();
+  sharedFixturePublished = false;
+  await page.getByRole('heading', { name: title, exact: true }).click();
+  modal = page.getByRole('dialog');
+  await modal.getByText('等待共享库出包', { exact: true }).waitFor();
+  check(await modal.getByText('等待共享库出包', { exact: true }).isVisible(), 'old-private-delivery-not-labelled-as-shared-publication');
   await modal.getByRole('button', { name: '关闭', exact: true }).click();
   await page.unroute(automatedRoute);
  }

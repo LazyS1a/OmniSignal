@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -38,7 +38,7 @@ def metadata(path):
         raise HTTPException(503,'发布元数据不可用') from None
 
 
-def router(root):
+def router(root, *, prefix='/knowledge/v1', policy_loader=None):
     root=Path(root)
     bearer=HTTPBearer(auto_error=False)
 
@@ -49,30 +49,63 @@ def router(root):
         if not credentials or not 32<=len(credentials.credentials)<=512 or not hmac.compare_digest(expected,hashlib.sha256(credentials.credentials.encode()).hexdigest()):
             raise HTTPException(401,'需要有效的下游读取身份')
 
-    feed=APIRouter(prefix='/knowledge/v1',dependencies=[Depends(authorize)])
+    feed=APIRouter(prefix=prefix,dependencies=[Depends(authorize)])
 
-    def directory(release_id):
+    def context(request:Request):
+        if policy_loader is None:
+            return root,None
+        from .publication_use import library_recipient
+        from .library_publication import library_root, require_library_target
+        try:
+            config=policy_loader()
+            policy=config.get('publication_authorized') if config else None
+            recipient=library_recipient(policy)
+            if recipient is None or recipient['library_id']!=request.path_params.get('library_id'):
+                raise ValueError('unknown_library')
+            selected=library_root(root,recipient)
+            require_library_target(selected,policy)
+            return selected,recipient
+        except (ValueError,KeyError,TypeError,OSError):
+            raise HTTPException(404,'灵感库发布源不存在') from None
+
+    def scoped_metadata(path,recipient):
+        from omnisignal.knowledge.scope import envelope_recipient
+        value=metadata(path)
+        try:
+            if envelope_recipient(value)!=recipient:
+                raise ValueError('recipient_mismatch')
+        except (ValueError,TypeError):
+            raise HTTPException(503,'发布接收范围不匹配') from None
+        return value
+
+    def scope_fields(recipient):
+        return {'schema_version':2,'recipient':recipient} if recipient is not None else {}
+
+    def directory(release_id,selected,recipient):
         if not isinstance(release_id,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',release_id):
             raise HTTPException(404,'发布版本不存在')
-        return contained(root,'releases/'+release_id+'/manifest.json').parent
+        path=contained(selected,'releases/'+release_id+'/manifest.json')
+        scoped_metadata(path,recipient)
+        return path.parent
 
     @feed.get('/latest')
-    def latest():
-        if not (root/'latest.json').exists():
-            return {'status':'empty','release':None}
-        pointer=metadata(contained(root,'latest.json'))
-        manifest=directory(pointer.get('release_id',''))/'manifest.json'
+    def latest(selected_context=Depends(context)):
+        selected,recipient=selected_context
+        if not (selected/'latest.json').exists():
+            return {'status':'empty','release':None,**scope_fields(recipient)}
+        pointer=metadata(contained(selected,'latest.json'))
+        manifest=directory(pointer.get('release_id',''),selected,recipient)/'manifest.json'
         if hashlib.sha256(manifest.read_bytes()).hexdigest()!=pointer.get('manifest_sha256'):
             raise HTTPException(503,'发布指针校验失败')
-        return {'status':'published','release':pointer}
+        return {'status':'published','release':pointer,**scope_fields(recipient)}
 
     @feed.get('/releases/{release_id}/manifest')
-    def manifest(release_id:str):
-        return FileResponse(contained(directory(release_id),'manifest.json'),media_type='application/json',headers={'Cache-Control':'no-store'})
+    def manifest(release_id:str,selected_context=Depends(context)):
+        return FileResponse(contained(directory(release_id,*selected_context),'manifest.json'),media_type='application/json',headers={'Cache-Control':'no-store'})
 
     @feed.get('/releases/{release_id}/files/{file_path:path}')
-    def file(release_id:str,file_path:str):
-        folder=directory(release_id)
+    def file(release_id:str,file_path:str,selected_context=Depends(context)):
+        folder=directory(release_id,*selected_context)
         data=metadata(folder/'manifest.json')
         if not isinstance(data.get('files'),list):
             raise HTTPException(503,'发布清单无效')
@@ -88,10 +121,11 @@ def router(root):
         return FileResponse(path,media_type='application/octet-stream',headers={'Cache-Control':'no-store'})
 
     @feed.get('/withdrawals/latest')
-    def withdrawals():
-        folder=root/'withdrawals'
+    def withdrawals(selected_context=Depends(context)):
+        selected,recipient=selected_context
+        folder=selected/'withdrawals'
         if folder.is_symlink():
             raise HTTPException(503,'撤回记录不可用')
         entries=[int(p.stem) for p in folder.glob('*.json') if p.stem.isdigit() and not p.is_symlink()]
-        return {'status':'published','withdrawal':metadata(contained(root,'withdrawals/'+str(max(entries))+'.json'))} if entries else {'status':'empty','withdrawal':None}
+        return {'status':'published','withdrawal':scoped_metadata(contained(selected,'withdrawals/'+str(max(entries))+'.json'),recipient),**scope_fields(recipient)} if entries else {'status':'empty','withdrawal':None,**scope_fields(recipient)}
     return feed

@@ -4,6 +4,8 @@ type Snapshot = {
  collection: { date: string; target: number; new_unique_images: number; remaining: number | null };
  editorial: {
   status: 'enabled' | 'disabled' | 'invalid_config'; running: boolean; auto_publish: boolean; publication_authorized?: boolean;
+  publication_recipient?: { kind: 'library'; library_id: string } | null; target_delivered_revisions?: number | null;
+  target_latest_release?: { release_id: string; sequence: number } | null;
   today?: { reviewed: number; published: number; awaiting_review: number; permission_blocked: number };
   last_tick?: { at: string; blocked: number; blocked_reasons: Record<string, number> } | null;
  };
@@ -44,6 +46,7 @@ export default function Automation({ revision }: { revision: number }) {
   ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{typeof value === 'number' ? value : '—'}</dd></div>)}</dl>
   {!!data?.collection.remaining && <p className="daily-pilot-note">今天距采集目标还差 {data.collection.remaining} 张。来源供给不足、站点限流或请求预算用完都会留下实际缺口。</p>}
   {data?.editorial.publication_authorized && <p className="daily-pilot-note">已启用公司内部灵感库用途策略：AI 检查合格后自动出包，在 DeepFlare 点击“接收最新灵感”即可导入。</p>}
+  {data?.editorial.publication_recipient?.kind === 'library' && <p className="daily-pilot-note">当前发布目标：DeepFlare 公司灵感库。已为该库出包 {data.editorial.target_delivered_revisions ?? 0} 个素材版本，各品牌引用同一库。{data.editorial.target_latest_release ? `最新交付版本：${data.editorial.target_latest_release.release_id}。` : '正在等待首个共享发布包。'}</p>}
   {!!today?.permission_blocked && <p className="daily-pilot-warning">{today.permission_blocked} 张尚未记录内部展示或传输依据，暂不发布到 DeepFlare。</p>}
   {!!localReadPending && <p className="daily-pilot-note">{localReadPending} 张素材暂时无法读取原图，正在等待本地复核；不会重新调用模型。</p>}
   {!!localReadFailed && <p className="daily-pilot-warning">{localReadFailed} 张素材连续读取原图失败，已暂停本地复核，请管理员检查文件。已有分析结果保留。</p>}

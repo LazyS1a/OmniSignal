@@ -125,6 +125,8 @@ def create_app(root=None, *, start_worker=None, frontend=None):
     app.state.auto_editorial=editorial
     from .feed import router as feed_router
     app.include_router(feed_router(Path(os.getenv("OMNISIGNAL_KNOWLEDGE_DIR",str(store.root/"published")))))
+    app.include_router(feed_router(Path(os.getenv("OMNISIGNAL_KNOWLEDGE_DIR",str(store.root/"published"))),
+                                   prefix="/knowledge/v2/libraries/{library_id}",policy_loader=editorial.configuration))
 
     @app.middleware("http")
     async def headers(request, call_next):
@@ -133,7 +135,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
         response.headers["Referrer-Policy"]="no-referrer"
         response.headers["X-Frame-Options"]="DENY"
         response.headers["Content-Security-Policy"]="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
-        if request.url.path.startswith(BASE) or request.url.path.startswith("/knowledge/v1"):
+        if request.url.path.startswith(BASE) or request.url.path.startswith("/knowledge/"):
             response.headers["Cache-Control"]="no-store"
         return response
 
@@ -374,7 +376,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
 
     @app.post(BASE+"/withdraw")
     async def withdraw(request:Request,identity=Depends(auth.admin)):
-        from .publishing import withdraw_assets
+        from .publishing import withdraw_publication_targets
         data=await body(request)
         ids,reason=data.get("asset_ids"),data.get("reason")
         if (set(data)-{"asset_ids","reason"} or not isinstance(ids,list) or not 1<=len(ids)<=50
@@ -390,7 +392,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
                     raise HTTPException(404,"选中的素材不存在")
                 selected.append(json.loads(row[0]))
             try:
-                result=withdraw_assets(Path(os.getenv("OMNISIGNAL_KNOWLEDGE_DIR",str(store.root/"published"))),
+                result=withdraw_publication_targets(Path(os.getenv("OMNISIGNAL_KNOWLEDGE_DIR",str(store.root/"published"))),
                                        selected,identity["actor"],reason)
             except ValueError as exc:
                 raise HTTPException(409,str(exc)) from None

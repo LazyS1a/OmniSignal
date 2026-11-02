@@ -123,11 +123,16 @@ class Store:
     def recover_withdrawals(self, publication_root=None):
         """Signed revocations survive a crash before the editorial DB commit."""
         from omnisignal.knowledge.release import _withdrawn, KnowledgeError
+        from omnisignal.knowledge.scope import envelope_recipient
+        from .library_publication import publication_targets
         published = Path(publication_root or os.getenv("OMNISIGNAL_KNOWLEDGE_DIR", str(self.root / "published")))
-        if not (published / "withdrawals").exists():
-            return
         try:
-            withdrawn = _withdrawn(published)
+            withdrawn = set()
+            for target, recipient in publication_targets(published):
+                for path in (target / "withdrawals").glob("*.json"):
+                    require(not path.is_symlink() and envelope_recipient(json.loads(path.read_text(encoding="utf-8"))) == recipient,
+                            "withdrawal_recipient_mismatch")
+                withdrawn.update(_withdrawn(target))
         except (KnowledgeError, OSError, ValueError):
             raise Conflict("签名撤回目录不可读取，暂停打开工作台以避免重新显示已撤回素材") from None
         if not withdrawn:
@@ -291,10 +296,13 @@ class Store:
             # Require the explicit signed withdrawal flow before reducing access.
             if item["status"] != "accepted" or any(item["permissions"].get(k) != "allowed" for k in ("display", "export")):
                 from omnisignal.knowledge.release import materialize_release, KnowledgeError
+                from .library_publication import publication_targets
                 published = Path(os.getenv("OMNISIGNAL_KNOWLEDGE_DIR", str(self.root / "published")))
-                if (published / "latest.json").exists():
+                for target, _recipient in publication_targets(published):
+                    if not (target / "latest.json").exists():
+                        continue
                     try:
-                        active = materialize_release(published)
+                        active = materialize_release(target)
                     except (KnowledgeError, OSError):
                         raise Conflict("无法核验已发布状态，暂不能降低权限；请检查发布目录") from None
                     require(asset_id not in active, "该素材已有签名发布版本，请先执行永久撤回，再变更状态或降低展示/导出权限")
