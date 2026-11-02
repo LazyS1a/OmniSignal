@@ -247,3 +247,53 @@ def test_brand_already_left_empty_is_warning_but_nonempty_claim_still_blocks(pre
     quality = skills.validate_details(canonical, value["result"], {"title": "", "description": ""})["quality"]
     assert quality["status"] == "needs_attention"
     assert {x["code"] for x in quality["issues"]} >= {"brand_without_visible_text", "model_reported_issue"}
+
+
+@pytest.mark.parametrize("field,action", [("purpose", "purposes为空数组。"), ("purposes", "保持purposes字段为[]。"),
+    ("kind", "kind为reference。"), ("kind", "请确认kind字段应该为'reference'。"),
+    ("medium", "确认媒介为包装。"), ("medium", "medium字段设为packaging"), ("task", "task为空数组")])
+def test_satisfied_exact_self_check_assignments_are_warnings(field, action):
+    value = envelope();value["result"]["purposes"] = []
+    value["details"]["self_check"] = [{"field": field, "evidence": "图中为合成素材，非真实广告或产品。", "action": action}]
+    quality = skills.validate_details(skills.normalize_model_details(value["details"], value["result"]), value["result"], {})["quality"]
+    assert quality["status"] == "passed"
+    assert quality["issues"][-1]["code"] == "self_check_already_applied"
+    assert quality["issues"][-1]["severity"] == "warning"
+
+
+@pytest.mark.parametrize("field,action,evidence", [
+    ("kind", "kind不应为reference", "需要判断"),
+    ("kind", "kind为reference，再补充品牌", "需要判断"),
+    ("kind", "kind为reference", "当前类型存在矛盾"),
+    ("kind", "kind为reference", "图中实际为商业广告"),
+    ("kind", "kind为reference", "kind为advertisement"),
+    ("kind", "kind为uncertain", "需要判断"),
+    ("kind", "kind为'reference", "需要判断"),
+    ("purpose", "无法判断是否为真实案例，purposes为空数组", "需要判断"),
+    ("purpose", "确认非广告用途", "需要判断"),
+    ("purposes", "purposes为空数组", "purposes=brand"),
+    ("purpose", "purposes为空数组", 'purposes为["conversion"]'),
+    ("kind", "kind为reference", "图中有促销号召但类型标错"),
+    ("medium", "medium为poster", "画面为包装"),
+    ("medium", "确认媒介为包装", "medium=poster"),
+    ("medium", "确认媒介为包装或海报", "需要判断"),
+    ("medium", "确认媒介为包装；删除来源", "需要判断"),
+    ("industry", "industry为空数组", "未知行业"),
+    ("task", "task为campaign", "未知任务"),
+    ("task", "task为空数组", "task=campaign"),
+])
+def test_self_check_negation_extra_actions_and_unknowns_remain_blocked(field, action, evidence):
+    result = envelope()["result"];result["purposes"] = []
+    assert not skills.self_check_already_applied({"field": field, "action": action, "evidence": evidence}, result)
+
+
+def test_empty_or_multi_medium_and_uncertain_kind_cannot_be_cleared():
+    result = envelope()["result"]
+    item = {"field": "medium", "action": "确认媒介为包装", "evidence": "画面可能属于包装"}
+    for medium in ([], ["packaging", "poster"]):
+        result["taxonomy"]["tags"]["medium"] = medium
+        assert not skills.self_check_already_applied(item, result)
+    result["kind"] = "uncertain"
+    assert not skills.self_check_already_applied({"field": "kind", "action": "kind为reference", "evidence": "类型未知"}, result)
+    result["purposes"] = ["brand"]
+    assert not skills.self_check_already_applied({"field": "purposes", "action": "purposes为空数组", "evidence": "未知用途"}, result)

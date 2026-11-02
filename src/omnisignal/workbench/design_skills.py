@@ -12,11 +12,12 @@ import json
 import re
 
 from .store import Conflict, encode, require
+from omnisignal.knowledge.taxonomy import TAXONOMY
 
 SCHEMA_VERSION = 1
 SKILL_VERSION = "omni-design-1"
 PROMPT_VERSION = "omni-design-prompt-3"
-VALIDATOR_VERSION = "omni-design-check-3"
+VALIDATOR_VERSION = "omni-design-check-4"
 PROVIDER_PREFIX = "design-v1:"
 OBSERVATION_FIELDS = ("palette", "typography", "composition", "hierarchy", "imagery")
 INFERENCE_FIELDS = ("reusable_ideas", "applicability", "limitations")
@@ -124,6 +125,54 @@ def _evidence(value, ids):
             and len(value) == len(set(value)), "专项分析引用缺失或指向不存在的观察")
 
 
+def self_check_already_applied(item, result):
+    """Recognize exact satisfied assignments, not arbitrary positive self-review.
+
+    Extra changes, negation or a stated contradiction retain a blocking issue.
+    Missing industry/medium is never cleared by this convenience rule.
+    """
+    field = item["field"]
+    action = re.sub(r"\s+", "", item["action"]).rstrip("。.")
+    evidence = item["evidence"]
+    if re.search(r"不应|不能|不宜|不可|并非|不是|错误|矛盾|冲突|有误|需修改|需要修改|却|然而|但|而非|实际", evidence):
+        return False
+    prefix = r"(?:请)?(?:保持|确认|将|把|设置)?"
+    assign = r"(?:字段)?(?:为|设为|设置为|应该为|应为|保持为)"
+    quote_open, quote_close = r"(?P<q>['\"`]?)", r"(?P=q)"
+    def conflicting_assignment(names, expected):
+        pattern = (r"(?:^|[^A-Za-z0-9_])(?:" + names + r")[\"'`]?\s*(?:字段)?\s*"
+                   r"(?:应该为|设置为|设为|应为|为|=|:|：)\s*"
+                   r"(\[[^\]\r\n]{0,80}\]|[\"'`]?[\w\-]+[\"'`]?)")
+        for value in re.findall(pattern, evidence):
+            if value.strip().strip("'\"`") not in expected:
+                return True
+        return False
+    if field in {"purpose", "purposes"} and result.get("purposes") == []:
+        if conflicting_assignment(r"purposes?", {"[]", "空数组"}):
+            return False
+        return re.fullmatch(prefix + r"purposes?" + assign + r"(?:空数组|\[\])", action) is not None
+    if field == "kind" and result.get("kind") == "reference":
+        if re.search(r"(?:kind|类型).{0,6}(?:advertisement|uncertain)", evidence, flags=re.IGNORECASE):
+            return False
+        return re.fullmatch(prefix + r"kind" + assign + quote_open + r"reference" + quote_close, action) is not None
+    if field == "task" and result.get("taxonomy", {}).get("tags", {}).get("task") == []:
+        if conflicting_assignment(r"task|任务", {"[]", "空数组"}):
+            return False
+        return re.fullmatch(prefix + r"(?:task|taxonomy\.task|任务)" + assign + r"(?:空数组|\[\])", action) is not None
+    if field == "medium":
+        current = result.get("taxonomy", {}).get("tags", {}).get("medium", [])
+        if not isinstance(current, list) or len(current) != 1:
+            return False
+        for identifier, choice in TAXONOMY["medium"].items():
+            if current != [identifier]:
+                continue
+            if conflicting_assignment(r"medium|媒介", {identifier, choice["label"], '["' + identifier + '"]', "['" + identifier + "']"}):
+                return False
+            value = "(?:" + re.escape(identifier) + "|" + re.escape(choice["label"]) + ")"
+            return re.fullmatch(prefix + r"(?:medium|taxonomy\.medium|媒介)" + assign + quote_open + value + quote_close, action) is not None
+    return False
+
+
 def quality_checks(details, result, system_normalizations=()):
     """Deterministic cross-checks, never a claim of independent visual accuracy."""
     issues = []
@@ -164,8 +213,9 @@ def quality_checks(details, result, system_normalizations=()):
         local_unknown = (item["field"] == "brand" and not brand and
                          any(word in (item["evidence"] + item["action"]).lower()
                              for word in ("未知", "不确定", "无法", "不能", "未出现", "未能", "未见", "没有", "缺少", "留空", "为空", "未提供", "unknown")))
-        issue("brand_unknown_retained" if local_unknown else "model_reported_issue", item["field"],
-              item["evidence"], item["action"], "warning" if local_unknown else "block")
+        applied = self_check_already_applied(item, result)
+        issue("brand_unknown_retained" if local_unknown else "self_check_already_applied" if applied else "model_reported_issue", item["field"],
+              item["evidence"], item["action"], "warning" if local_unknown or applied else "block")
     return {"status": "needs_attention" if any(x["severity"] == "block" for x in issues) else "passed", "issues": issues}
 
 
