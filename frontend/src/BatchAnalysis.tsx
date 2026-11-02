@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ApiError, request, type Asset } from './api';
 
 type BatchInput = { asset_id: string; expected_revision: number };
@@ -16,7 +16,8 @@ const jobLabels: Record<string, string> = { queued: '排队中', running: '分�
 function savedId(key: string) { try { const value = sessionStorage.getItem(key); return value && /^[a-f0-9]{32}$/.test(value) ? value : ''; } catch { return ''; } }
 function remember(key: string, value: string) { try { if (value) sessionStorage.setItem(key, value); else sessionStorage.removeItem(key); } catch { /* Progress remains available in this page when browser storage is disabled. */ } }
 
-export default function BatchAnalysis({ actor, assets, loading, selected, onSelection, onAsset, onBusy, onSubmitted }: {
+export default function BatchAnalysis({ actor, assets, loading, selected, onSelection, onAsset, onBusy, onSubmitted, extraActions, externalBusy = false }: {
+ extraActions?: ReactNode; externalBusy?: boolean;
  actor: string; assets: Asset[]; loading: boolean; selected: string[]; onSelection: (ids: string[]) => void; onAsset: (asset: Asset) => void; onBusy: (busy: boolean) => void; onSubmitted: () => void;
 }) {
  const storageKey = `omni:analysis-batch:${encodeURIComponent(actor)}`;
@@ -33,6 +34,11 @@ export default function BatchAnalysis({ actor, assets, loading, selected, onSele
  const active = batch?.state === 'running';
 
  useEffect(() => { onBusy(busy || uncertain); return () => onBusy(false); }, [busy, uncertain, onBusy]);
+
+ useEffect(() => {
+  if (!externalBusy || inFlight.current || uncertain) return;
+  generation.current += 1; setPreview(null); submission.current = null; setOpen(false);
+ }, [externalBusy, uncertain]);
 
  useEffect(() => {
   if (phase.current === 'submit' || uncertain) return;
@@ -61,7 +67,7 @@ export default function BatchAnalysis({ actor, assets, loading, selected, onSele
  }, [active, batch, poll, preview]);
 
  async function inspect() {
-  if (inFlight.current || !selectedAssets.length || uncertain) return;
+  if (externalBusy || inFlight.current || !selectedAssets.length || uncertain) return;
   inFlight.current = true; phase.current = 'preview'; setBusy(true); setOpen(true); setError(''); setPreview(null);
   const version = ++generation.current;
   const items = selectedAssets.map(asset => ({ asset_id: asset.id, expected_revision: asset.revision }));
@@ -75,7 +81,7 @@ export default function BatchAnalysis({ actor, assets, loading, selected, onSele
 
  async function submit() {
   const payload = submission.current;
-  if (inFlight.current || !payload || (!uncertain && !preview?.totals.eligible)) return;
+  if (externalBusy || inFlight.current || !payload || (!uncertain && !preview?.totals.eligible)) return;
   inFlight.current = true; phase.current = 'submit'; setBusy(true); setError('');
   const id = payload.request_id.replaceAll('-', '').toLowerCase();
   remember(storageKey, id);
@@ -105,17 +111,18 @@ export default function BatchAnalysis({ actor, assets, loading, selected, onSele
 
  return <section className="batch-analysis" aria-label="批量分析">
   <div className="batch-toolbar">
-   <label className="batch-select-all"><input type="checkbox" checked={allSelected} disabled={loading || !assets.length || busy || uncertain} onChange={() => onSelection(allSelected ? [] : assets.map(asset => asset.id))} />全选本页</label>
+   <label className="batch-select-all"><input type="checkbox" checked={allSelected} disabled={externalBusy || loading || !assets.length || busy || uncertain} onChange={() => onSelection(allSelected ? [] : assets.map(asset => asset.id))} />全选本页</label>
    <span className="muted">已选 {selected.length} 张</span>
-   {selected.length > 0 && <button className="text-button" disabled={busy || uncertain} onClick={() => onSelection([])}>取消选择</button>}
+   {selected.length > 0 && <button className="text-button" disabled={externalBusy || busy || uncertain} onClick={() => onSelection([])}>取消选择</button>}
    <div className="batch-toolbar-actions">
-    {batchId && <button className="text-button" onClick={showProgress} disabled={busy || uncertain}>查看最近批次{active ? ' · 处理中' : ''}</button>}
-    <button className="button secondary small" disabled={loading || !selected.length || busy || uncertain} onClick={inspect}>{busy && !preview ? '正在检查…' : '批量分析'}</button>
+    {extraActions}
+    {batchId && <button className="text-button" onClick={showProgress} disabled={externalBusy || busy || uncertain}>查看最近批次{active ? ' · 处理中' : ''}</button>}
+    <button className="button secondary small" disabled={externalBusy || loading || !selected.length || busy || uncertain} onClick={inspect}>{busy && !preview ? '正在检查…' : '批量分析'}</button>
    </div>
   </div>
-  <p className="batch-hint">先检查可分析数量，再排队处理。已分析的图片会跳过，结果仍需人工复核。</p>
+  <p className="batch-hint">勾选图片后可批量收录或分析。全选仅作用于当前页，切换筛选或翻页会清空选择。</p>
   {open && <section className="batch-panel" aria-labelledby="batch-heading">
-   <div className="batch-heading"><h2 id="batch-heading">{preview || inspecting ? '确认批量分析' : '批量分析进度'}</h2><button className="text-button" disabled={busy || uncertain} onClick={closePreview}>收起</button></div>
+   <div className="batch-heading"><h2 id="batch-heading">{preview || inspecting ? '确认批量分析' : '批量分析进度'}</h2><button className="text-button" disabled={externalBusy || busy || uncertain} onClick={closePreview}>收起</button></div>
    {error && <p className="analysis-error" role="alert">{error}</p>}
    {!result && !error && <p className="muted" role="status">{inspecting ? '正在检查所选图片…' : '正在读取批次信息…'}</p>}
    {result && <>
@@ -128,7 +135,7 @@ export default function BatchAnalysis({ actor, assets, loading, selected, onSele
      <div className="batch-item-main"><button className="text-button batch-item-title" onClick={() => viewAsset(item.asset_id)}>{item.title || '素材暂不可用'}</button><span className={`batch-state ${item.disposition === 'skipped' ? 'skipped' : item.status === 'completed' ? 'complete' : ''}`}>{item.disposition === 'eligible' ? '可排队' : item.disposition === 'skipped' ? '跳过' : jobLabels[item.status || ''] || '等待更新'}</span></div>
      {item.reason && <p className="muted">{item.reason}</p>}
     </li>)}</ul>
-    {preview && <div className="form-actions"><button className="button secondary" disabled={busy || uncertain} onClick={closePreview}>暂不分析</button><button className="button primary" disabled={busy || (!uncertain && !preview.totals.eligible)} onClick={submit}>{busy ? '正在提交…' : uncertain ? '用同一请求安全重试' : `开始批量分析（${preview.totals.eligible} 张）`}</button></div>}
+    {preview && <div className="form-actions"><button className="button secondary" disabled={externalBusy || busy || uncertain} onClick={closePreview}>暂不分析</button><button className="button primary" disabled={busy || (!uncertain && !preview.totals.eligible)} onClick={submit}>{busy ? '正在提交…' : uncertain ? '用同一请求安全重试' : `开始批量分析（${preview.totals.eligible} 张）`}</button></div>}
    </>}
    {!preview && error && <button className="button secondary small" disabled={busy} onClick={() => setPoll(n => n + 1)}>再次查询批次</button>}
   </section>}

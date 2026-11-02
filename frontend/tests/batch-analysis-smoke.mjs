@@ -88,7 +88,7 @@ try {
  await page.getByRole('button', { name: /^待处理/ }).click();
  await page.getByRole('heading', { name: assets[0].title, exact: true }).waitFor();
  stage = 'pagination-selection';
- await page.getByRole('checkbox', { name: `选择分析 ${assets[0].title}`, exact: true }).check();
+ await page.getByRole('checkbox', { name: `选择素材 ${assets[0].title}`, exact: true }).check();
  await page.getByRole('button', { name: '下一页', exact: true }).click();
  await page.getByText('已选 0 张', { exact: true }).waitFor();
  check(await page.getByRole('button', { name: '批量分析', exact: true }).isDisabled(), 'page-change-clears-selection');
@@ -96,7 +96,7 @@ try {
  await page.getByRole('textbox', { name: '搜索标题、品牌或描述', exact: true }).fill('Test');
  await page.getByRole('heading', { name: assets[0].title, exact: true }).waitFor();
  await page.getByRole('button', { name: '下一页', exact: true }).waitFor({ state: 'hidden' });
- check(await page.getByRole('checkbox', { name: /^选择分析 / }).count() === 8, 'pending-selection-visible');
+ check(await page.getByRole('checkbox', { name: /^选择素材 / }).count() === 8, 'pending-selection-visible');
 
  stage = 'preview';
  await page.getByRole('checkbox', { name: '全选本页', exact: true }).check();
@@ -129,7 +129,7 @@ try {
  await page.getByRole('button', { name: '批量分析', exact: true }).click();
  await previewEntered;
  await page.getByRole('textbox', { name: '搜索标题、品牌或描述', exact: true }).fill('A Test');
- await page.getByRole('checkbox', { name: /^选择分析 / }).first().waitFor();
+ await page.getByRole('checkbox', { name: /^选择素材 / }).first().waitFor();
  await page.getByText('已选 0 张', { exact: true }).waitFor();
  check(await page.getByRole('heading', { name: '确认批量分析', exact: true }).count() === 0, 'changing-filter-closes-inflight-preview');
  response = page.waitForResponse(r => new URL(r.url()).pathname === previewPath);
@@ -140,7 +140,7 @@ try {
  check(await page.getByRole('button', { name: '批量分析', exact: true }).isDisabled(), 'filter-change-clears-selection');
  await page.getByRole('textbox', { name: '搜索标题、品牌或描述', exact: true }).fill('');
  await page.getByRole('heading', { name: assets[7].title, exact: true }).waitFor();
- for (const asset of assets.slice(0, 5)) await page.getByRole('checkbox', { name: `选择分析 ${asset.title}`, exact: true }).check();
+ for (const asset of assets.slice(0, 5)) await page.getByRole('checkbox', { name: `选择素材 ${asset.title}`, exact: true }).check();
  response = page.waitForResponse(r => new URL(r.url()).pathname === previewPath);
  await page.getByRole('button', { name: '批量分析', exact: true }).click();
  preview = await (await response).json();
@@ -174,7 +174,7 @@ try {
  await page.getByRole('button', { name: '关闭', exact: true }).click();
 
  stage = 'ambiguous-response';
- await page.getByRole('checkbox', { name: `选择分析 ${assets[5].title}`, exact: true }).check();
+ await page.getByRole('checkbox', { name: `选择素材 ${assets[5].title}`, exact: true }).check();
  await page.getByRole('button', { name: '批量分析', exact: true }).click();
  await page.getByRole('button', { name: '开始批量分析（1 张）', exact: true }).waitFor();
  let lost = false, blockRecovery = true;
@@ -207,7 +207,7 @@ try {
  await login(page, base, 'batch-viewer', viewerPassword);
  await page.getByRole('button', { name: /^待处理/ }).click();
  await page.getByRole('heading', { name: assets[0].title, exact: true }).waitFor();
- check(await page.getByRole('button', { name: '批量分析', exact: true }).count() === 0 && await page.getByRole('checkbox', { name: /^选择分析 / }).count() === 0, 'viewer-has-no-batch-actions');
+ check(await page.getByRole('button', { name: '批量分析', exact: true }).count() === 0 && await page.getByRole('checkbox', { name: /^选择素材 / }).count() === 0, 'viewer-has-no-batch-actions');
  check(await page.getByRole('button', { name: /^查看最近批次/ }).count() === 0, 'other-user-does-not-see-prior-batch');
  check(pageErrors === 0, 'zero-browser-runtime-errors');
  await fs.writeFile(path.join(results, 'summary.json'), JSON.stringify({ status: 'passed', checks, provider: 'synthetic-only', paid_calls: 0, fixture_calls: await fakeCalls() }, null, 2));
