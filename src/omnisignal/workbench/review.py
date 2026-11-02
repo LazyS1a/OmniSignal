@@ -243,6 +243,15 @@ def describe_review(asset, db=None):
         if job is not None and job["suggestion"] == asset.get("analysis_suggestion"):
             result["analysis_suggestion_job_id"] = job_id
     result.update(describe_quality(asset, db))
+    result["publication_use_status"] = "original_permissions"
+    if db is not None:
+        from .publication_use import existing_basis
+        try:
+            if existing_basis(db, asset) is not None:
+                validate_automated_quality(db, asset)
+                result["publication_use_status"] = "internal_policy"
+        except (Conflict, ValueError, KeyError, TypeError):
+            result["publication_use_status"] = "stale"
     return result
 
 

@@ -57,7 +57,7 @@ try {
   else if (p === '/analysis/config') value = { configured: true, status: 'ready', request_limit: 120, used: 0 };
   else if (p === '/taxonomy') value = { version: 'nova-1', groups: { industry: {}, medium: {}, task: {} } };
   else if (p === '/plans') value = { items: [], sources: [] };
-  else if (p === '/automation') value = { worker_enabled: true, collection: { date: '2026-11-02', target: 100, new_unique_images: 100, remaining: 0 }, editorial: { status: 'enabled', running: true, auto_publish: true, today: { reviewed: 10, published: 3, awaiting_review: 0, permission_blocked: 7 } } };
+  else if (p === '/automation') value = { worker_enabled: true, collection: { date: '2026-11-02', target: 100, new_unique_images: 100, remaining: 0 }, editorial: { status: 'enabled', running: true, auto_publish: true, publication_authorized: true, today: { reviewed: 10, published: 3, awaiting_review: 0, permission_blocked: 7 } } };
   else value = {};
   await route.fulfill({ json: value || {} });
  });
@@ -111,6 +111,8 @@ try {
  await page.getByRole('button', { name: '采集', exact: true }).click();
  await page.getByText(/内容初审通过且用途依据齐全的素材自动生成/).waitFor();
  check(await page.getByText(/下游接收状态以 DeepFlare 为准/).isVisible(), 'automation-copy-retains-receipt-boundary');
+ check(await page.getByText(/已启用公司内部灵感库用途策略/).isVisible(), 'operator-policy-coverage-visible');
+ check(await page.getByText(/点击“接收最新灵感”即可导入/).isVisible(), 'manual-deepflare-receive-path-visible');
  check(forbidden.length === 0, 'no-collection-analysis-review-or-publication-writes');
  check(errors.length === 0, 'no-runtime-browser-errors');
  await fs.writeFile(path.join(output, 'checks.json'), JSON.stringify({ kind: 'synthetic-ui-contract-checks', checks }, null, 2));

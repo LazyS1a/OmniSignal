@@ -37,6 +37,15 @@ state=db.execute("select value from meta where key='auto_editorial_status'").fet
 policy=json.loads((root/'operations/auto-editorial-policy.json').read_text())
 result={'checked_at':now.isoformat(),'day':day,'timezone':'Asia/Shanghai','runtime_sha':env.get('OMNISIGNAL_SOURCE_COMMIT'),'health':c['State'].get('Health',{}).get('Status'),'worker_enabled':env.get('OMNISIGNAL_WORKBENCH_WORKER')=='true','design_skills_enabled':env.get('OMNISIGNAL_WORKBENCH_DESIGN_SKILLS') in ['on','true','1'],'design_skills_daily_limit':int(env.get('OMNISIGNAL_WORKBENCH_DESIGN_SKILLS_DAILY_LIMIT','0')),'design_skills_quota_timezone':'UTC','auto_publish':policy['auto_publish'],'today_all_job_states':dict(collections.Counter(j['status'] for j in jobs)),'today_new_rules_job_states':dict(collections.Counter(j['status'] for j in new)),'today_new_rules_charged':sum(j['charged'] for j in new),'quality_status':dict(quality),'profiles':dict(profiles),'prompt_versions':dict(versions),'accepted_waiting_usage_basis':permissions,'assets_by_status':{r[0]:r[1] for r in db.execute('select status,count(*) from assets group by status')},'publication_records':db.execute('select count(*) from releases').fetchone()[0],'last_tick':{k:v for k,v in (tick or {}).items() if k in ['at','status','reviewed','published','blocked','blocked_reasons']},'human_reviewed':None,'receiver_receipt':'unconfirmed','cost':None,'read_only':True,'business_submissions':0}
 result.update(today_ai_reviewed=len(reviewed),today_automatically_published_assets=len(published),today_project_coverage=len(projects))
+result['accepted_original_permissions_unknown']=permissions
+result['internal_publication_policy_enabled']=bool(policy.get('publication_authorized'))
+has_grants=db.execute("select 1 from sqlite_master where type='table' and name='publication_use_grants'").fetchone()
+result['internal_publication_grants']=db.execute('select count(*) from publication_use_grants').fetchone()[0] if has_grants else 0
+if result['internal_publication_policy_enabled']:
+ # Original per-image permissions remain unchanged by a separate internal-use
+ # policy. They cannot be counted as current blocked delivery candidates.
+ result['accepted_waiting_usage_basis']=None
+result['last_tick_usage_blocked']=(tick or {}).get('blocked_reasons',{}).get('display_export_permission_required')
 db.close();print(json.dumps(result))
 '''
 
@@ -63,7 +72,8 @@ def main():
             f"# Omni 专项规则运行快照 · {value['day']}\n\n"
             f"服务：{value['health']}；版本符合预期：{value['expected_runtime']}；自动发布：{value['auto_publish']}。\n\n"
             f"当日全部任务：{value['today_all_job_states']}。新版任务：{value['today_new_rules_job_states']}。\n\n"
-            f"内容检查：{value['quality_status']}；已收录但用途依据未齐：{value['accepted_waiting_usage_basis']}。\n\n"
+            f"内容检查：{value['quality_status']}；原逐图用途记录未齐：{value['accepted_original_permissions_unknown']}；内部策略已启用：{value['internal_publication_policy_enabled']}；已记录内部交付依据：{value['internal_publication_grants']}。\n\n"
+            f"最近一轮因用途阻断：{value['last_tick_usage_blocked']}（空值表示未记录，不能当成0）。\n\n"
             "人工完成量、实际成本未知；下游接收回执未确认。本次只有读取，没有业务提交。\n", encoding='utf-8')
         print(json.dumps(value, ensure_ascii=False))
         return 0

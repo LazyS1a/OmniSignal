@@ -10,7 +10,7 @@ export default function DesignInsights({ asset, details }: { asset: Asset; detai
  const issues = quality?.issues || details?.quality.issues || [];
  const card = quality?.inspiration_card || details?.inspiration_card;
  const profile = quality?.profile || details?.profile;
- const hasPermission = asset.permissions.display === 'allowed' && asset.permissions.export === 'allowed';
+ const hasPermission = asset.publication_use_status === 'internal_policy' || (asset.permissions.display === 'allowed' && asset.permissions.export === 'allowed');
  const published = asset.publication_status === 'published', withdrawn = asset.publication_status === 'withdrawn';
  if (!details && (!quality || quality.status === 'legacy' && !asset.analysis_suggestion && !asset.reviewed_analysis)) return null;
  return <section className="design-insights" aria-labelledby="design-insights-title">
@@ -23,6 +23,7 @@ export default function DesignInsights({ asset, details }: { asset: Asset; detai
   {stale && <p className="analysis-error" role="status">素材或来源资料已更新。以下是历史分析，不能作为当前收录或发布依据。</p>}
   {withdrawn && <p className="analysis-error">该素材已永久撤回，分析结果不会使它重新进入发布流程。</p>}
   <p className="muted">AI 内容初审与人工审核分别记录。正常素材可按自动策略收录、发布；有疑点的素材留在待处理区。</p>
+  {asset.publication_use_status === 'internal_policy' && <p className="muted">本图按公司内部灵感库策略交付，用途记录与 AI 内容分析分别保存。</p>}
   {details?.route_reason && <p className="muted">分析方向依据：{details.route_reason}</p>}
   {card && <div className={`inspiration-card${stale ? ' stale' : ''}`} aria-label={stale ? '历史灵感卡' : '灵感卡'}>
    <dl>{([['设计任务', card.task], ['可借鉴的方法', card.method], ['适用场景', card.applicability], ['使用边界', card.limitations]] as const).map(([label, text]) => <div key={label}><dt>{label}</dt><dd>{text || '尚无可靠结论'}</dd></div>)}</dl>

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 type Snapshot = {
  collection: { date: string; target: number; new_unique_images: number; remaining: number | null };
  editorial: {
-  status: 'enabled' | 'disabled' | 'invalid_config'; running: boolean; auto_publish: boolean;
+  status: 'enabled' | 'disabled' | 'invalid_config'; running: boolean; auto_publish: boolean; publication_authorized?: boolean;
   today?: { reviewed: number; published: number; awaiting_review: number; permission_blocked: number };
   last_tick?: { at: string; blocked: number; blocked_reasons: Record<string, number> } | null;
  };
@@ -43,9 +43,10 @@ export default function Automation({ revision }: { revision: number }) {
    ['AI 复核完成', today?.reviewed], ['新发布图片', today?.published],
   ].map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{typeof value === 'number' ? value : '—'}</dd></div>)}</dl>
   {!!data?.collection.remaining && <p className="daily-pilot-note">今天距采集目标还差 {data.collection.remaining} 张。来源供给不足、站点限流或请求预算用完都会留下实际缺口。</p>}
+  {data?.editorial.publication_authorized && <p className="daily-pilot-note">已启用公司内部灵感库用途策略：AI 检查合格后自动出包，在 DeepFlare 点击“接收最新灵感”即可导入。</p>}
   {!!today?.permission_blocked && <p className="daily-pilot-warning">{today.permission_blocked} 张尚未记录内部展示或传输依据，暂不发布到 DeepFlare。</p>}
   {!!localReadPending && <p className="daily-pilot-note">{localReadPending} 张素材暂时无法读取原图，正在等待本地复核；不会重新调用模型。</p>}
   {!!localReadFailed && <p className="daily-pilot-warning">{localReadFailed} 张素材连续读取原图失败，已暂停本地复核，请管理员检查文件。已有分析结果保留。</p>}
-  <p className="daily-pilot-note">{data?.editorial.auto_publish ? '内容初审通过且用途依据齐全的素材自动生成带出处的知识包；存在疑点的素材隔离待处理。DeepFlare 拉取并校验后才能显示。' : '当前未启用自动发布：分类与内容初审继续运行，发布包等待手动发布或管理员启用自动策略。'} AI 复核与人工审核分别记录；下游接收状态以 DeepFlare 为准。</p>
+  <p className="daily-pilot-note">{data?.editorial.auto_publish ? '内容初审通过且用途依据齐全的素材自动生成带出处的知识包；存在疑点的素材隔离待处理。在 DeepFlare 点击接收，后台校验并导入后显示。' : '当前未启用自动发布：分类与内容初审继续运行，发布包等待手动发布或管理员启用自动策略。'} AI 复核与人工审核分别记录；下游接收状态以 DeepFlare 为准。</p>
  </section>;
 }

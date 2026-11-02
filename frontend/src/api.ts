@@ -28,7 +28,7 @@ export type Session = { authenticated: boolean; user?: { actor: string; role: st
 export type Asset = {
  id: string; title: string; brand?: string; source_url?: string; image_url?: string; thumbnail_url?: string;
  width?: number; height?: number; status: Status; purposes: Purpose[]; kind: string; reason?: string;
- description?: string; ocr_text?: string; permissions: Permissions; revision: number; created_at?: string; project_id?: string; analysis_suggestion?: Suggestion; analysis_suggestion_revision?: number; analysis_suggestion_job_id?: string | null; reviewed_analysis?: ReviewedAnalysis; reviewed_analysis_status?: 'none' | 'current' | 'stale'; publication_status?: 'published' | 'withdrawn';
+ description?: string; ocr_text?: string; permissions: Permissions; revision: number; created_at?: string; project_id?: string; analysis_suggestion?: Suggestion; analysis_suggestion_revision?: number; analysis_suggestion_job_id?: string | null; reviewed_analysis?: ReviewedAnalysis; reviewed_analysis_status?: 'none' | 'current' | 'stale'; publication_status?: 'published' | 'withdrawn'; publication_use_status?: 'internal_policy' | 'stale' | 'original_permissions';
  reviewed_taxonomy?: ReviewedTaxonomy; reviewed_taxonomy_status?: 'none' | 'current' | 'stale';
  analysis_job_id?: string; analysis_status?: string; analysis_details?: AnalysisDetails | null; analysis_details_status?: 'none' | 'current' | 'missing' | 'stale'; analysis_quality?: AnalysisQuality; processing_group?: ProcessingGroup;
  audit?: Array<{ action?: string; actor?: string; at?: string; created_at?: string; reason?: string }>;

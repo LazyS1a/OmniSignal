@@ -1,7 +1,8 @@
 """Opt-in local AI editorial worker. Scheduling model calls belongs to DailyPilot.
 
-This service never grants display/export permission and never labels model work
-as human review. It accepts only a completed, current Qwen job and signs eligible
+This service never infers use rights or labels model work as human review.
+An explicit operator policy can authorize scoped internal delivery separately
+from original permissions. It accepts a completed, current Qwen job and signs eligible
 local releases; a signed release is not a downstream delivery receipt.
 """
 from __future__ import annotations
@@ -18,8 +19,9 @@ import threading
 from omnisignal.knowledge.release import KnowledgeError, _lock
 from .publishing import publish_store_assets, publication_snapshot_ids
 from .review import apply_automated_review, fresh_review, validate_automated_quality
-from .store import Conflict, encode, require, stamp
+from .store import Conflict, asset_row_consistent, encode, require, stamp
 from .taxonomy import fresh_taxonomy
+from .publication_use import ensure_table, permits_internal_delivery, validate_policy
 
 ACTOR = "system:auto-editorial"
 CONFIG_ENV = "OMNISIGNAL_WORKBENCH_AUTO_EDITORIAL_CONFIG"
@@ -30,7 +32,7 @@ LOCAL_REVIEW_MAX_IO_ATTEMPTS = len(LOCAL_REVIEW_RETRY_DELAYS) + 1
 
 
 def validate_config(value):
-    require(isinstance(value, dict) and set(value) == CONFIG_KEYS and value["schema_version"] == 1,
+    require(isinstance(value, dict) and set(value) in (CONFIG_KEYS, CONFIG_KEYS | {"publication_authorized"}) and value["schema_version"] == 1,
             "invalid_auto_editorial_config")
     require(type(value["enabled"]) is bool and type(value["auto_publish"]) is bool, "invalid_auto_editorial_config")
     sources = value["source_ids"]
@@ -48,6 +50,7 @@ def validate_config(value):
             require(parsed.tzinfo is not None, "invalid_analysis_authorization")
         except (TypeError, ValueError):
             raise Conflict("invalid_analysis_authorization") from None
+    validate_policy(value.get("publication_authorized"), source_ids=sources)
     return deepcopy(value)
 
 
@@ -60,6 +63,7 @@ class AutoEditorial:
         self._thread = None
         self._stop = threading.Event()
         with store.db() as db:
+            ensure_table(db)
             db.execute("""CREATE TABLE IF NOT EXISTS auto_editorial_outcomes(
                 asset_id TEXT NOT NULL, revision INTEGER NOT NULL, job_id TEXT NOT NULL,
                 outcome TEXT NOT NULL, reason TEXT NOT NULL, at TEXT NOT NULL,
@@ -120,9 +124,11 @@ class AutoEditorial:
         granted = 0
         with self.store.db() as db:
             db.execute("BEGIN IMMEDIATE")
-            rows = db.execute("SELECT document FROM assets WHERE status='pending' ORDER BY created_at,id").fetchall()
+            rows = db.execute("SELECT * FROM assets WHERE status='pending' ORDER BY created_at,id").fetchall()
             for row in rows:
-                asset = json.loads(row[0])
+                if not asset_row_consistent(row):
+                    continue
+                asset = json.loads(row["document"])
                 if (asset.get("source_id") not in config["source_ids"] or asset.get("permissions", {}).get("analysis") != "unknown"
                         or asset.get("reviewed_analysis") or asset.get("reviewed_taxonomy")):
                     continue
@@ -167,12 +173,13 @@ class AutoEditorial:
             return False
         stale = False
         for item in batch:
-            row = db.execute("SELECT document FROM assets WHERE id=?", (item["id"],)).fetchone()
-            asset = json.loads(row[0]) if row else {}
-            stale = stale or (asset.get("revision") != item["revision"] or asset.get("sha256") != item["sha256"]
+            row = db.execute("SELECT * FROM assets WHERE id=?", (item["id"],)).fetchone()
+            asset = json.loads(row["document"]) if row else {}
+            stale = stale or (not asset_row_consistent(row)
+                or asset.get("revision") != item["revision"] or asset.get("sha256") != item["sha256"]
                 or asset.get("status") != "accepted" or asset.get("publication_status") == "withdrawn"
                 or asset.get("source_id") not in config["source_ids"]
-                or any(asset.get("permissions", {}).get(name) != "allowed" for name in ("display", "export")))
+                or not permits_internal_delivery(asset, config.get("publication_authorized")))
             if asset.get("reviewed_analysis", {}).get("provenance") == "model_automated_review":
                 try:
                     validate_automated_quality(db, asset)
@@ -198,11 +205,14 @@ class AutoEditorial:
                   "receipt_status": "unconfirmed", "releases": []}
         reasons = Counter()
         with self.store.db() as db:
-            rows = db.execute("SELECT document FROM assets WHERE status IN ('pending','accepted') ORDER BY created_at,id").fetchall()
+            rows = db.execute("SELECT * FROM assets WHERE status IN ('pending','accepted') ORDER BY created_at,id").fetchall()
         attempted, publishable = 0, []
         for row in rows:
-            asset = json.loads(row[0])
+            asset = json.loads(row["document"])
             if asset.get("source_id") not in config["source_ids"]:
+                continue
+            if not asset_row_consistent(row):
+                reasons["storage_inconsistent"] += 1
                 continue
             if asset["status"] == "pending":
                 job_id = asset.get("analysis_job_id")
@@ -271,7 +281,7 @@ class AutoEditorial:
             if not config["auto_publish"]:
                 reasons["automatic_publication_disabled"] += 1
                 continue
-            if any(asset.get("permissions", {}).get(name) != "allowed" for name in ("display", "export")):
+            if not permits_internal_delivery(asset, config.get("publication_authorized")):
                 reasons["display_export_permission_required"] += 1
                 continue
             if len(publishable) < min(25, config["max_per_tick"]):
@@ -293,7 +303,8 @@ class AutoEditorial:
                             "publication_scope_changed")
                     receipt = publish_store_assets(self.store, [item["id"] for item in batch], ACTOR,
                         expected_revisions={item["id"]: item["revision"] for item in batch}, automated_only=True,
-                        publication_root=self.publication_root)
+                        publication_root=self.publication_root,
+                        publication_policy=config.get("publication_authorized"), policy_loader=self.configuration)
                     with self.store.db() as db:
                         db.execute("DELETE FROM meta WHERE key='auto_editorial_publication_batch' AND value=?", (encode(batch),))
                     result["releases"].append(receipt)
@@ -336,11 +347,12 @@ class AutoEditorial:
                                            (asset.get("analysis_job_id"),)).fetchone()
                     awaiting += int(bool(completed))
                 if asset["status"] == "accepted" and asset.get("reviewed_analysis", {}).get("provenance") == "model_automated_review":
-                    permission_blocked += int(any(asset.get("permissions", {}).get(name) != "allowed" for name in ("display", "export")))
+                    permission_blocked += int(not permits_internal_delivery(asset, config.get("publication_authorized") if config else None))
             today = {"date": day, "timezone": "Asia/Shanghai", **{name: len(values) for name, values in counts.items()},
                      "awaiting_review": awaiting, "permission_blocked": permission_blocked, "human_reviewed": None}
         return {"status": state, "actor": ACTOR, "source_ids": config["source_ids"] if config else [],
                 "auto_publish": bool(config and config["auto_publish"]),
+                "publication_authorized": bool(config and config.get("publication_authorized")),
                 "analysis_authorized": bool(config and config["analysis_authorized"]),
                 "human_reviewed": None, "receipt_status": "unconfirmed",
                 "last_tick": json.loads(row[0]) if row else None,

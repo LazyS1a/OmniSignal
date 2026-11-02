@@ -25,8 +25,9 @@ from omnisignal.knowledge.release import (
 )
 from .review import DESIGN_FIELDS, fresh_review
 from .taxonomy import fresh_taxonomy
-from .store import Conflict, encode, require, stamp
+from .store import Conflict, asset_from_row, encode, require, stamp
 from omnisignal.knowledge.taxonomy import TAXONOMY_VERSION
+from .publication_use import delivery_projection, validate_policy
 PURPOSES = {"brand", "conversion"}
 CHECKPOINT_CHAIN_LIMIT = 16
 
@@ -190,10 +191,12 @@ def _prepare_asset(asset: dict, stage: Path) -> dict:
         case["editorial"]["reviewed_analysis"] = reviewed
         if reviewed["provenance"] == "model_automated_review":
             case["editorial"]["review_method"] = "automated"
+    if asset.get("publication_use_basis") is not None:
+        case["editorial"]["publication_use_basis"] = asset["publication_use_basis"]
     return case
 
 
-def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id=None) -> dict:
+def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id=None, before_sign=None) -> dict:
     """Publish all supplied assets or fail; retain prior releases via deltas.
 
     ``root`` is the publication root. The signing key must be supplied separately
@@ -265,6 +268,11 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
                     _require(len(records) <= MAX_RECORDS, "publication checkpoint exceeds record capacity")
                     _stage_records(records, locations, stage)
                     kind, parent = "full", None
+            # Preparing/copying image bytes can take time. Re-read operator
+            # policy inside the publication lock, after preparation and directly
+            # before creating any new signed files.
+            if before_sign is not None:
+                before_sign()
             publish_release(
                 root=root, release_id=release_id, sequence=sequence, records=records,
                 asset_root=stage, private_key=private_key, key_id=key_id,
@@ -280,7 +288,7 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
 
 
 def publish_store_assets(store, asset_ids, actor, *, expected_revisions=None,
-                         automated_only=False, publication_root=None):
+                         automated_only=False, publication_root=None, publication_policy=None, policy_loader=None):
     """Same editorial transaction -> signature -> receipt order as the HTTP path.
 
     A stable snapshot ID replays an immutable signed directory after a crash
@@ -292,23 +300,40 @@ def publish_store_assets(store, asset_ids, actor, *, expected_revisions=None,
             and all(isinstance(value, str) for value in asset_ids)
             and len(set(asset_ids)) == len(asset_ids), "请明确选择 1–50 张素材，不可重复")
     require(not automated_only or actor == "system:auto-editorial", "invalid_automated_actor")
+    require(publication_policy is None or automated_only, "internal_publication_requires_automated_review")
+    publication_policy = validate_policy(publication_policy)
+    def check_policy():
+        if policy_loader is not None:
+            current = policy_loader()
+            require(current and current["enabled"] and current["auto_publish"]
+                    and current.get("publication_authorized") == publication_policy, "publication_policy_changed")
     root = Path(publication_root or os.getenv("OMNISIGNAL_KNOWLEDGE_DIR", str(store.root / "published")))
     with store.db() as db:
         db.execute("BEGIN IMMEDIATE")
+        check_policy()
         # A checkpoint carries the already published inventory forward. Refuse
         # to carry cases whose current source record lost its use basis.
-        for case_id in materialize_release(root):
-            prior_row = db.execute("SELECT document FROM assets WHERE id=?", (case_id,)).fetchone()
+        for case_id, signed_case in materialize_release(root).items():
+            prior_row = db.execute("SELECT * FROM assets WHERE id=?", (case_id,)).fetchone()
             require(prior_row is not None, "已发布素材的本地用途记录缺失，暂停发布")
-            prior_asset = json.loads(prior_row[0])
-            require(prior_asset.get("status") == "accepted" and prior_asset.get("publication_status") != "withdrawn"
-                    and all(prior_asset.get("permissions", {}).get(name) == "allowed" for name in ("display", "export")),
+            prior_asset = asset_from_row(prior_row, strict=True)
+            require(prior_asset.get("status") == "accepted" and prior_asset.get("publication_status") != "withdrawn",
                     "已发布素材用途状态已变化，需先处理撤回")
+            recovering = (case_id in asset_ids and automated_only and publication_policy is not None
+                          and prior_asset.get("publication_status") != "published")
+            if recovering:
+                from .review import validate_automated_quality
+                validate_automated_quality(db, prior_asset)
+            prior_projected = delivery_projection(store, db, prior_asset, policy=publication_policy if recovering else None,
+                                                 create=recovering)
+            signed_basis = signed_case.get("editorial", {}).get("publication_use_basis")
+            require(signed_basis == prior_projected.get("publication_use_basis"), "已发布素材用途依据已变化，需先处理撤回")
         selected = []
+        originals = {}
         for asset_id in sorted(asset_ids):
-            row = db.execute("SELECT document FROM assets WHERE id=?", (asset_id,)).fetchone()
+            row = db.execute("SELECT * FROM assets WHERE id=?", (asset_id,)).fetchone()
             require(row is not None, "选中的素材不存在")
-            asset = json.loads(row[0])
+            asset = asset_from_row(row, strict=True)
             if expected_revisions is not None:
                 require(expected_revisions.get(asset_id) == asset["revision"], "素材已被修改，请重新确认发布")
             if automated_only:
@@ -321,6 +346,9 @@ def publish_store_assets(store, asset_ids, actor, *, expected_revisions=None,
             if asset.get("reviewed_analysis", {}).get("provenance") == "model_automated_review":
                 from .review import validate_automated_quality
                 validate_automated_quality(db, asset)
+            originals[asset_id] = asset
+            asset = delivery_projection(store, db, asset, policy=publication_policy,
+                                        create=automated_only and publication_policy is not None)
             asset["image_path"] = str(store.images / asset["image_file"])
             selected.append(asset)
         publication_id, legacy_id = publication_snapshot_ids(selected)
@@ -333,10 +361,10 @@ def publish_store_assets(store, asset_ids, actor, *, expected_revisions=None,
         if existing is not None and all(item.get("publication_status") == "published"
                                         and item.get("publication_version") == publication_id for item in selected):
             return {**json.loads(existing[0]), "replayed": True}
-        result = publish_assets(root, selected, actor, publication_id=publication_id)
+        check_policy()
+        result = publish_assets(root, selected, actor, publication_id=publication_id, before_sign=check_policy)
         db.execute("INSERT OR IGNORE INTO releases VALUES(?,?,?)", (result["version"], encode(result), stamp()))
-        for item in selected:
-            item.pop("image_path", None)
+        for item in originals.values():
             item["publication_status"], item["publication_version"] = "published", result["version"]
             require(db.execute("UPDATE assets SET document=? WHERE id=? AND revision=?",
                                (encode(item), item["id"], item["revision"])).rowcount == 1, "发布时素材版本已变化")
