@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives import serialization
 from PIL import Image
 
 from omnisignal.knowledge.release import (
-    KnowledgeError, MAX_IMAGE_BYTES, MAX_PACKAGE_BYTES, MAX_RECORDS, _identifier, _image, _lock,
+    KnowledgeError, MAX_IMAGE_BYTES, MAX_PACKAGE_BYTES, MAX_RECORDS, _file, _identifier, _image, _lock,
     _require, _text, digest, load_private_key, make_record, publish_release,
     read_latest, _history, publish_withdrawals, verify_release, materialize_release, _withdrawn,
 )
@@ -211,6 +211,9 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
     _text(actor, "authenticated publisher")
     _require(isinstance(assets, list) and 0 < len(assets) <= MAX_RECORDS,
              "select between 1 and 2000 accepted assets")
+    _require(all(isinstance(asset, dict) for asset in assets), "invalid asset")
+    asset_ids = [_identifier(asset.get("id")) for asset in assets]
+    _require(len(set(asset_ids)) == len(asset_ids), "duplicate asset in publication")
     key_file = os.environ.get("OMNISIGNAL_KNOWLEDGE_SIGNING_KEY_FILE", "").strip()
     _require(bool(key_file), "signing key is not configured")
     try:
@@ -224,8 +227,16 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
 
     # The adapter lock serializes allocation of consecutive sequences while the
     # protocol's own lock still protects it from other CLI publishers.
-    with tempfile.TemporaryDirectory(prefix="omni-publish-") as directory:
+    # A full checkpoint can be much larger than the container's small /tmp
+    # tmpfs. Stage on the existing knowledge volume, outside its HTTP release
+    # namespace. Each invocation owns and cleans only its unique directory.
+    stage_parent = _file(root, ".workbench/staging")
+    stage_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _file(root, ".workbench/staging")  # Recheck after creating parent components.
+    with tempfile.TemporaryDirectory(prefix="omni-publish-", dir=stage_parent) as directory:
         stage = Path(directory)
+        _require(not stage.is_symlink() and stage.resolve().is_relative_to(stage_parent.resolve()),
+                 "publication staging escaped its data volume")
         records, image_bytes = [], 0
         for asset in assets:
             record = make_record(_prepare_asset(asset, stage))
