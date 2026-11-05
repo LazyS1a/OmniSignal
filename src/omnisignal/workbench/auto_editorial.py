@@ -23,11 +23,13 @@ from .store import Conflict, asset_row_consistent, encode, require, stamp
 from .taxonomy import fresh_taxonomy
 from .publication_use import ensure_table, permits_internal_delivery, validate_policy, library_recipient, target_delivered
 from .library_publication import target_root
+from .receiver_budget import select_publication_batch, ReceiptUnavailable
+from .source_adapters import SOURCE_CONFIGS as EXTRA_SOURCES
 from omnisignal.knowledge.scope import recipient_key
 
 ACTOR = "system:auto-editorial"
 CONFIG_ENV = "OMNISIGNAL_WORKBENCH_AUTO_EDITORIAL_CONFIG"
-SOURCE_IDS = {"potw", "adsofbrands", "bpando", "itsnicethat"}
+SOURCE_IDS = {"potw", "adsofbrands", "bpando", "itsnicethat"} | set(EXTRA_SOURCES)
 CONFIG_KEYS = {"schema_version", "enabled", "source_ids", "analysis_authorized", "auto_publish", "interval_seconds", "max_per_tick"}
 LOCAL_REVIEW_RETRY_DELAYS = (60, 300)
 LOCAL_REVIEW_MAX_IO_ATTEMPTS = len(LOCAL_REVIEW_RETRY_DELAYS) + 1
@@ -301,6 +303,31 @@ class AutoEditorial:
             if len(publishable) < min(25, config["max_per_tick"]):
                 publishable.append({"id": asset["id"], "revision": asset["revision"], "sha256": asset["sha256"]})
         if config["auto_publish"]:
+            # Ask the receiver before freezing membership. Signed outstanding
+            # packages reserve allowance across ticks/restarts and date changes.
+            # A frozen recovery batch is never truncated to fit today's quota.
+            with self.store.db() as db:
+                db.execute("BEGIN IMMEDIATE")
+                frozen = db.execute("SELECT value FROM meta WHERE key=?", (batch_key,)).fetchone()
+                if frozen and self._discard_unsigned_stale_batch(db, json.loads(frozen[0]), config):
+                    frozen = None
+            frozen_batch = json.loads(frozen[0]) if frozen else None
+            delivery_allowed = True
+            try:
+                selected, delivery = select_publication_batch(self.store, frozen_batch or publishable,
+                    config.get("publication_authorized"), publication_root=self.publication_root)
+                result["delivery_budget"] = delivery
+                if frozen_batch is not None:
+                    delivery_allowed = selected == frozen_batch
+                    if not delivery_allowed:
+                        reasons["receiver_daily_limit"] += len(frozen_batch)
+                else:
+                    reasons["receiver_daily_limit"] += len(publishable) - len(selected)
+                    publishable = selected
+            except (ReceiptUnavailable, OSError, ValueError, KeyError, TypeError):
+                delivery_allowed = False
+                result["delivery_budget"] = {"status": "unavailable", "receipt_status": "unconfirmed"}
+                reasons["receiver_receipt_required"] += 1
             # Commit batch membership before any signature. A later tick first
             # reconciles that same batch even if more images arrived meanwhile.
             with self.store.db() as db:
@@ -308,10 +335,12 @@ class AutoEditorial:
                 pending = db.execute("SELECT value FROM meta WHERE key=?", (batch_key,)).fetchone()
                 batch = json.loads(pending[0]) if pending else publishable
                 if pending and self._discard_unsigned_stale_batch(db, batch, config):
-                    pending, batch = None, publishable
-                if batch and not pending:
+                    # A replacement must pass its own downstream preflight on
+                    # the next tick; the discarded batch's quota is not a grant.
+                    pending, batch = None, []
+                if batch and not pending and delivery_allowed:
                     db.execute("INSERT INTO meta(key,value) VALUES(?,?)", (batch_key, encode(batch)))
-            if batch:
+            if batch and delivery_allowed:
                 try:
                     require(all((self.store.asset(item["id"]) or {}).get("source_id") in config["source_ids"] for item in batch),
                             "publication_scope_changed")

@@ -82,6 +82,12 @@ def sources():
         {"id": "manual", "label": "手工导入", "category": "manual", "verified": True,
          "description": "导入已有素材，保留来源并人工确认分类与用途。", "requires_credentials": False},
     ]
+    from .source_adapters import source_catalog
+    from .source_readiness import source_readiness
+    for item in source_catalog():
+        readiness = source_readiness(item["id"])
+        item.update(verified=readiness["verified"], readiness=readiness)
+        result.append(item)
     return result
 
 
@@ -206,6 +212,12 @@ class Store:
                  "ocr_text": "", "permissions": {k: "unknown" for k in ("display", "analysis", "export")},
                  "permission_note": "", "revision": 1, "created_at": stamp(),
                  "legacy": meta.get("legacy"), "analysis_status": "not_analyzed"}
+        evidence = meta.get("collection_evidence")
+        if evidence is not None:
+            require(isinstance(evidence, dict) and set(evidence) <= {
+                "basis", "verification", "native_id", "declared_width", "declared_height", "dimension_basis"}, "采集证据字段无效")
+            require(len(encode(evidence)) <= 2000, "采集证据字段过长")
+            asset["collection_evidence"] = evidence
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT document FROM assets WHERE id=?", (asset_id,)).fetchone()
@@ -347,6 +359,10 @@ class Store:
         require(type(limit) is int and 1 <= limit <= 500, "每日请求上限应为 1–500 次")
         plan = {"id":uuid.uuid4().hex, "name":name.strip(), "source_id":source["id"], "interval_hours":hours,
                 "request_limit":limit, "created_at":stamp()}
+        if source["id"] == "pexels":
+            query = body.get("query", "")
+            require(isinstance(query, str) and 1 <= len(query.strip()) <= 200, "请填写 Pexels 图片搜索词（不超过 200 字）")
+            plan["query"] = query.strip()
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             require(db.execute("SELECT count(*) FROM plans").fetchone()[0] < 20, "试点最多创建 20 个计划")
@@ -375,6 +391,10 @@ class Store:
                     "label":"今日请求预算已用完" if exhausted else "配置就绪",
                     "reasons":["次日 UTC 预算重置后可继续"] if exhausted else [],
                     "connection":"not_checked" if not last else "last_run_available"}
+                from .source_readiness import source_readiness
+                source_state = source_readiness(item["source_id"])
+                if source_state["state"] != "ready":
+                    item["readiness"] = {**source_state, "label": source_state["reasons"][0], "connection": "not_ready"}
                 row_counts = db.execute("SELECT status,count(*) FROM assets WHERE json_extract(document,'$.source_id')=? GROUP BY status",(item["source_id"],)).fetchall()
                 counter = dict(row_counts)
                 item["counts"] = {"fetched":sum(counter.values()), "accepted":counter.get("accepted",0), "scope":"source"}
@@ -392,6 +412,10 @@ class Store:
             if action == "check":
                 self.audit(db,plan_id,actor,"configuration_check",{"network_request":False})
             else:
+                if action in {"resume", "run"}:
+                    from .source_readiness import source_readiness
+                    readiness = source_readiness(json.loads(row["document"])["source_id"])
+                    require(readiness["state"] == "ready", "；".join(readiness["reasons"]))
                 require(action != "run" or row["enabled"], "计划已暂停，请先恢复")
                 require(action != "run" or not row["active_run"], "此计划已有运行中的任务")
                 enabled = 0 if action == "pause" else 1

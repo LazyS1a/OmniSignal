@@ -40,8 +40,9 @@ export type Plan = {
  readiness: { state: string; label: string; reasons: string[] };
  last_run?: { status: string; started_at?: string; finished_at?: string; reason?: string; imported?: number } | null;
  counts: { fetched: number; accepted: number }; budget: { request_limit: number; used: number; period: string };
- interval_hours: number; next_run?: string | number;
+ interval_hours: number; next_run?: string | number; query?: string;
 };
+export type PlanCreateBody = { name: string; source_id: string; interval_hours: number; request_limit: number; query?: string };
 export type Summary = { counts: { assets: number; pending: number; accepted: number; supplemental: number }; model?: { configured: boolean }; budget?: unknown };
 export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
 let csrf = '';

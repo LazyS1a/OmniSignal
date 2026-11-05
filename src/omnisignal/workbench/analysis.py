@@ -18,6 +18,7 @@ from omnisignal.knowledge.release import KnowledgeError, _lock
 from .store import Conflict, asset_from_row, asset_row_consistent, encode, require, stamp
 from omnisignal.knowledge.taxonomy import TAXONOMY
 from .taxonomy import validated_suggestion_taxonomy
+from .schema_diagnostics import safe_diagnostic, schema_diagnostic
 
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
@@ -53,8 +54,9 @@ FAILURE_REASONS = {code: f"[{code}] {message}；本次请求已记录，不会�
 
 class AnalysisFailure(Conflict):
     """Fixed failure metadata only; never retain an upstream body or exception text."""
-    def __init__(self, code):
+    def __init__(self, code, *, diagnostic=None):
         self.code = code if code in FAILURE_REASONS else "unknown_error"
+        self.diagnostic = (safe_diagnostic(diagnostic) or schema_diagnostic(stage="response")) if self.code == "response_schema_invalid" else None
         super().__init__(FAILURE_REASONS[self.code])
 
 
@@ -309,7 +311,8 @@ class AnalysisService:
             columns = {row[1] for row in db.execute("PRAGMA table_info(analysis_jobs)")}
             for name, declaration in (("remote_request_id", "TEXT"), ("remote_job_id", "TEXT"),
                                       ("next_poll_at", "REAL NOT NULL DEFAULT 0"), ("input_binding", "TEXT"),
-                                      ("asset_revision", "INTEGER"), ("projection_evidence", "TEXT"), ("details_sha256", "TEXT")):
+                                      ("asset_revision", "INTEGER"), ("projection_evidence", "TEXT"), ("details_sha256", "TEXT"),
+                                      ("failure_diagnostic", "TEXT")):
                 if name not in columns:
                     db.execute(f"ALTER TABLE analysis_jobs ADD COLUMN {name} {declaration}")
         # A live worker owns this cross-process lock for its complete request.
@@ -565,6 +568,7 @@ class AnalysisService:
         value["suggestion"] = json.loads(value["suggestion"]) if value.get("suggestion") else None
         value["charged"] = bool(value["charged"])
         value["failure_code"], value["reason"] = failure_fields(value.get("reason"))
+        value["failure_diagnostic"] = safe_diagnostic(value.get("failure_diagnostic")) if value["failure_code"] == "response_schema_invalid" else None
         from .design_skills import get_analysis_details
         if db is not None:
             value["details"] = get_analysis_details(db, value["id"])
@@ -746,6 +750,7 @@ class AnalysisService:
             else:
                 db.execute("UPDATE analysis_jobs SET status='running' WHERE id=?", (job["id"],))
         details = None
+        diagnostic = None
         try:
             # Stable ID binds a remote request to this durable local job. Never
             # submit again automatically after an uncertain network outcome.
@@ -755,17 +760,19 @@ class AnalysisService:
                 with self.store.db() as receipt_db:
                     receipt_db.execute("UPDATE analysis_jobs SET remote_job_id=? WHERE id=?", (remote_id, job["id"]))
             output = provider.analyze(context, image, receipt=receipt) if getattr(provider, "is_nova", False) else provider.analyze(context, image)
+            validation_stage = "result"
             try:
                 from .design_skills import bind_details, details_required, normalize_model_envelope
                 if details_required(job):
                     result_output, details_output, normalizations = normalize_model_envelope(output)
                     suggestion = _result(result_output, asset["id"], require_taxonomy=True)
+                    validation_stage = "details"
                     details = bind_details(details_output, suggestion, asset, job, provider.model_version,
                                            getattr(provider, "last_usage", None), system_normalizations=normalizations)
                 else:
                     suggestion = _result(output, asset["id"], require_taxonomy=getattr(provider, "requires_taxonomy", False))
-            except (Conflict, KeyError, TypeError, ValueError, RecursionError):
-                raise AnalysisFailure("response_schema_invalid") from None
+            except (Conflict, KeyError, TypeError, ValueError, RecursionError) as error:
+                raise AnalysisFailure("response_schema_invalid", diagnostic=schema_diagnostic(error, stage=validation_stage)) from None
             suggestion["model_version"] = provider.model_version
             status, reason = "completed", "分析建议已保存，等待内容审核"
         except Exception as exc:
@@ -774,9 +781,11 @@ class AnalysisService:
                 suggestion, status, reason = None, "waiting_remote", "等待 Nova 原任务结果，后台只读同步，不会重新提交或扣除新额度"
             else:
                 code = exc.code if isinstance(exc, AnalysisFailure) else "unknown_error"
+                diagnostic = exc.diagnostic if isinstance(exc, AnalysisFailure) else None
                 suggestion, status, reason = None, "failed", FAILURE_REASONS.get(code, FAILURE_REASONS["unknown_error"])
         with self.store.db() as db:
             db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE analysis_jobs SET failure_diagnostic=? WHERE id=?", (encode(diagnostic) if diagnostic else None, job["id"]))
             if status == "waiting_remote":
                 db.execute("UPDATE analysis_jobs SET next_poll_at=? WHERE id=?", (time.time() + 15, job["id"]))
             if details is not None and status == "completed":

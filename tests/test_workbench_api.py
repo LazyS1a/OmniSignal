@@ -50,6 +50,24 @@ def imported(client):
     return response.json()
 
 
+def test_pexels_plan_query_reaches_store_and_stays_paused(app, monkeypatch):
+    monkeypatch.setenv('OMNISIGNAL_WORKBENCH_VALIDATED_SOURCE_IDS', 'pexels')
+    monkeypatch.delenv('OMNISIGNAL_PEXELS_API_KEY', raising=False)
+    monkeypatch.delenv('OMNISIGNAL_PEXELS_API_KEY_FILE', raising=False)
+    web = client(app)
+    payload = {'name': 'Pexels paused UI fixture', 'source_id': 'pexels',
+               'interval_hours': 24, 'request_limit': 30, 'query': '  packaging design  '}
+    response = web.post(BASE+'/plans', json=payload)
+    assert response.status_code == 201
+    assert response.json()['query'] == 'packaging design'
+    assert response.json()['enabled'] is False
+    assert response.json()['budget']['used'] == 0
+    assert response.json()['last_run'] is None
+    assert app.state.store.list_plans(raw=True)[0]['query'] == 'packaging design'
+    for invalid in ('', '   ', 123, ['test'], 'x' * 201):
+        assert web.post(BASE+'/plans', json={**payload, 'query': invalid}).status_code == 409
+
+
 def test_real_import_review_filter_persistence_and_no_fabricated_approval(app):
     web=client(app)
     item=imported(web)

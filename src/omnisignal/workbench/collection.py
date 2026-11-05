@@ -21,10 +21,13 @@ from omnisignal.knowledge.curation import inspect_image
 from omnisignal.knowledge.design_collection import FetchError, PublicFetcher, USER_AGENT
 from omnisignal.knowledge.design_sources import SOURCES, canonical_url, discover, extract_article
 from omnisignal.workbench import ad_source, potw_source
+from omnisignal.workbench import source_adapters
+from omnisignal.workbench.source_readiness import PhotoPageCursor, pexels_api_key, source_readiness
 from omnisignal.workbench.potw_transport import POTWTransport
 from omnisignal.workbench.acquisition import ArchiveCursor, ProjectProgress, ProjectRetry, daily_target, progress
 
-SOURCE_CONFIGS = {**SOURCES, "adsofbrands": ad_source.CONFIG, "potw": potw_source.CONFIG}
+SOURCE_CONFIGS = {**SOURCES, "adsofbrands": ad_source.CONFIG, "potw": potw_source.CONFIG,
+                  **source_adapters.SOURCE_CONFIGS}
 
 
 ERRORS = {
@@ -47,6 +50,15 @@ ERRORS = {
     "parse_or_image_error": "部分项目的正文或图片不完整，已跳过，需检查来源适配。",
     "unexpected_error": "本次获取未完成，已有素材保留；请查看服务诊断。",
     "access_barrier_unresolved": "来源的访问校验未能通过，已停止自动获取；请确认站点未更换防护。",
+    "source_not_validated": "此实验来源尚未完成运营采集验收，未发送网络请求。",
+    "source_transport_unavailable": "来源需要正常可访问网页或授权浏览器会话，当前尚未配置。",
+    "pexels_api_key_missing": "尚未配置 Pexels 官方图片 API 凭据，未发送请求。",
+    "pexels_api_key_file_invalid": "Pexels 私有凭据文件配置无效，未发送请求。",
+    "pexels_authorization_required": "Pexels 图片 API 拒绝授权，请检查对应凭据。",
+    "pexels_rate_limited": "Pexels 图片 API 已限流，本次停止且不自动重试。",
+    "pexels_http_error": "Pexels 图片 API 返回异常，当前分页进度已保留。",
+    "pexels_network_error": "Pexels 图片 API 连接失败，当前分页进度已保留。",
+    "listing_structure_or_access_unavailable": "未能读取此来源的项目列表，请核对页面结构或正常登录状态。",
 }
 
 
@@ -115,6 +127,8 @@ class BudgetedFetcher(PublicFetcher):
 
 
 def project_id(source_id, url):
+    if source_id in source_adapters.SOURCE_CONFIGS:
+        return source_adapters.project_identity(source_id, url)["project_id"]
     return source_id + "-" + hashlib.sha256(canonical_url(url).encode()).hexdigest()[:20]
 
 
@@ -128,6 +142,8 @@ def _discover(site, config, fetcher):
     if site == "potw":
         return _discover_potw(config, fetcher)
     listing = fetcher.get(config["listing"])
+    if site in source_adapters.SOURCE_CONFIGS:
+        return listing, source_adapters.discover_projects(site, listing)
     if site == "adsofbrands":
         return listing, ad_source.discover(listing)
     return listing, discover(site, listing)
@@ -148,6 +164,8 @@ def _discover_potw(config, fetcher):
 
 
 def _extract(site, raw, url):
+    if site in source_adapters.SOURCE_CONFIGS:
+        return source_adapters.extract_project_metadata(site, raw, url)
     if site == "adsofbrands":
         return ad_source.extract_article(raw, url)
     if site == "potw":
@@ -187,9 +205,10 @@ def source_fetcher(site, config, reserve, default=BudgetedFetcher):
 
 
 class WorkbenchCollector:
-    def __init__(self, store, *, fetcher_factory=None, clock=time.time):
+    def __init__(self, store, *, fetcher_factory=None, clock=time.time, pexels_client=None):
         self.store, self.clock = store, clock
         self.factory = fetcher_factory
+        self.pexels_client = pexels_client
         self._stopping = threading.Event()
         self._wake = threading.Event()
         self._queue = queue.Queue(maxsize=20)
@@ -303,14 +322,19 @@ class WorkbenchCollector:
             site = plan["source_id"]
             if site not in SOURCE_CONFIGS:
                 raise FetchError("unsupported_source")
+            readiness = source_readiness(site)
+            if readiness["state"] != "ready":
+                raise FetchError(readiness["state"])
             config = SOURCE_CONFIGS[site]
             fetcher = self._build_fetcher(site, config, reserve)
             if isinstance(fetcher, (BudgetedFetcher, POTWTransport)):
                 fetcher.stop_event = self._stopping
+            if site == "pexels":
+                return self._run_pexels(plan, run_id, reserve, fetcher, target)
             listing, urls = _discover(site, config, fetcher)
             if not urls:
                 raise FetchError("listing_structure_changed")
-            cursor = ArchiveCursor(self.store, site, config["listing"]) if target else None
+            cursor = ArchiveCursor(self.store, site, config["listing"]) if target and site not in source_adapters.SOURCE_CONFIGS else None
             if cursor:
                 cursor.observe(listing, config["listing"])
             known = set(self.store.known_project_ids(site))
@@ -367,6 +391,8 @@ class WorkbenchCollector:
                                 "description": _image_description(article, candidate, index=position, total=len(planned)),
                                 "source_url": canonical_url(url), "source_image_url": candidate["url"],
                                 "source_id": site, "project_id": identity,
+                                **({"collection_evidence": _collection_evidence(article, candidate)}
+                                   if site in source_adapters.SOURCE_CONFIGS else {}),
                             }, content, actor="collector", deduplicate_images=bool(target))
                             image_count += 1
                             imported += int(result["created"])
@@ -415,6 +441,8 @@ class WorkbenchCollector:
         except FetchError as error:
             status = "stopped" if error.code in {"paused", "budget_exhausted", "worker_stopped", "request_blocked"} else "partial" if imported else "failed"
             reason = explain(error.code)
+        except source_adapters.SourceAdapterError as error:
+            status, reason = "partial" if imported else "failed", explain(str(error))
         except ValueError:
             status, reason = "partial" if imported else "failed", ERRORS["parse_or_image_error"]
         except Exception:
@@ -422,3 +450,95 @@ class WorkbenchCollector:
         self.store.finish_run(plan_id, run_id, status, reason, imported)
         return {"run_id": run_id, "status": status, "reason": reason, "imported": imported,
                 "acquisition": progress(self.store) if target else None}
+
+    def _run_pexels(self, plan, run_id, reserve, fetcher, target):
+        imported, status, reason = 0, "ok", "本次检查完成，没有发现新的图片。"
+        try:
+            cursor = PhotoPageCursor(self.store, plan["id"], plan.get("query", ""))
+            raw_limit = os.getenv("OMNISIGNAL_WORKBENCH_COLLECTION_PROJECT_LIMIT", "2")
+            limit = int(raw_limit) if raw_limit in {str(n) for n in range(1, 101)} else 2
+            considered, pages = 0, 0
+            known = self.store.known_project_ids("pexels")
+            while considered < limit and pages < 3:
+                if self._stopping.is_set():
+                    raise FetchError("worker_stopped")
+                if target and progress(self.store)["remaining"] == 0:
+                    break
+                if cursor.state["empty_at"] is not None:
+                    break
+                if cursor.state["items"] is None:
+                    items = source_adapters.fetch_pexels_photos(plan.get("query", ""),
+                        api_key=pexels_api_key(), reserve_request=reserve,
+                        page=cursor.state["page"], per_page=80, client=self.pexels_client)
+                    cursor.load_page(items)
+                    pages += 1
+                    if not items:
+                        break
+                items = cursor.state["items"]
+                while cursor.state["index"] < len(items) and considered < limit:
+                    if target and progress(self.store)["remaining"] == 0:
+                        break
+                    article = items[cursor.state["index"]]
+                    identity = project_id("pexels", article["source_url"])
+                    if identity not in known:
+                        candidate = article["candidates"][0]
+                        content = fetcher.get(candidate["url"], image=True)
+                        inspect_image(content, set())
+                        result = self.store.import_asset({
+                            "title": article["title"][:500], "brand": "",
+                            "description": _image_description(article, candidate, index=1, total=1),
+                            "source_url": article["source_url"], "source_image_url": candidate["url"],
+                            "source_id": "pexels", "project_id": identity,
+                            "collection_evidence": _collection_evidence(article, candidate),
+                        }, content, actor="collector", deduplicate_images=True)
+                        imported += int(result["created"])
+                        known.add(identity)
+                    cursor.consumed()
+                    considered += 1
+                if cursor.state["index"] == len(items):
+                    cursor.next_page()
+                else:
+                    break
+            if imported:
+                reason = f"已获取 {imported} 张 Pexels 图片，进入分类流程；用途权限单独记录。"
+        except FetchError as error:
+            status = "stopped" if error.code in {"paused", "budget_exhausted", "worker_stopped", "request_blocked"} else "partial" if imported else "failed"
+            reason = explain(error.code)
+        except source_adapters.SourceAdapterError as error:
+            status, reason = "partial" if imported else "failed", explain(str(error))
+        except ValueError:
+            status, reason = "partial" if imported else "failed", ERRORS["parse_or_image_error"]
+        except Exception:
+            status, reason = "partial" if imported else "failed", ERRORS["unexpected_error"]
+        self.store.finish_run(plan["id"], run_id, status, reason, imported)
+        return {"run_id": run_id, "status": status, "reason": reason, "imported": imported,
+                "acquisition": progress(self.store) if target else None}
+
+
+def _collection_evidence(article, candidate):
+    return {"basis": candidate.get("image_basis", article.get("evidence_basis")),
+            "verification": article.get("verification"), "native_id": article.get("native_id"),
+            "declared_width": candidate.get("declared_width"), "declared_height": candidate.get("declared_height"),
+            "dimension_basis": candidate.get("dimension_basis")}
+
+
+def import_browser_observation(store, source, snapshot, content, *, image_index=0):
+    """Import already downloaded bytes from an ordinary browser observation.
+
+    No network or automatic plan activation occurs. Preview evidence remains
+    explicit and this manual import does not pretend to be scheduled collection.
+    """
+    if source not in source_adapters.SOURCE_CONFIGS or source == "pexels":
+        raise source_adapters.SourceAdapterError("browser_source_required")
+    article = source_adapters.normalize_project(source, snapshot, basis="listing-preview")
+    if type(image_index) is not int or not 0 <= image_index < len(article["candidates"]):
+        raise source_adapters.SourceAdapterError("invalid_image_index")
+    candidate = article["candidates"][image_index]
+    inspect_image(content, set())
+    return store.import_asset({
+        "title": article["title"], "brand": "",
+        "description": _image_description(article, candidate, index=image_index + 1, total=len(article["candidates"])),
+        "source_url": article["source_url"], "source_image_url": candidate["url"],
+        "source_id": source, "project_id": article["project_id"],
+        "collection_evidence": _collection_evidence(article, candidate),
+    }, content, actor="operator", deduplicate_images=True)

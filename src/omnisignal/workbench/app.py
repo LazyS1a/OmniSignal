@@ -312,7 +312,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
     @app.post(BASE+"/plans",status_code=201)
     async def create_plan(request:Request,identity=Depends(auth.operator)):
         data=await body(request)
-        if set(data)-{"name","source_id","interval_hours","request_limit"}:
+        if set(data)-{"name","source_id","interval_hours","request_limit","query"}:
             raise HTTPException(422,"计划包含不支持的字段")
         return store.create_plan(data,identity["actor"])
 

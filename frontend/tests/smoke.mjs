@@ -73,7 +73,7 @@ draw.text((40,60),'SYNTHETIC UI TEST - NOT A REAL AD',fill='#34452a')
 draw.rectangle((60,170,540,640),outline='#667c49',width=3)
 image.save(root/'synthetic-ui-test.png')
 uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTEND']),host='127.0.0.1',port=int(os.environ['SMOKE_PORT']),log_level='error')`;
-  server = spawn(python, ['-c', code], { cwd: repository, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, PYTHONPATH: path.join(repository, 'src'), SMOKE_ROOT: temporary, SMOKE_FRONTEND: path.join(frontend, 'dist'), SMOKE_PORT: String(port), SMOKE_USERNAME: username, SMOKE_PASSWORD: password, SMOKE_VIEWER_PASSWORD: viewerPassword, OMNISIGNAL_WORKBENCH_USERS_FILE: path.join(temporary, 'users.json'), OMNISIGNAL_WORKBENCH_MODEL_API_KEY: '', OMNISIGNAL_WORKBENCH_MODEL: '', OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT: '0', OMNISIGNAL_WORKBENCH_SECURE_COOKIE: 'false', OMNISIGNAL_KNOWLEDGE_SIGNING_KEY_FILE: '', OMNISIGNAL_PREPARATION_DIR: '', OMNISIGNAL_WORKBENCH_WORKER: 'false' } });
+  server = spawn(python, ['-c', code], { cwd: repository, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, PYTHONPATH: path.join(repository, 'src'), SMOKE_ROOT: temporary, SMOKE_FRONTEND: path.join(frontend, 'dist'), SMOKE_PORT: String(port), SMOKE_USERNAME: username, SMOKE_PASSWORD: password, SMOKE_VIEWER_PASSWORD: viewerPassword, OMNISIGNAL_WORKBENCH_USERS_FILE: path.join(temporary, 'users.json'), OMNISIGNAL_WORKBENCH_MODEL_API_KEY: '', OMNISIGNAL_WORKBENCH_MODEL: '', OMNISIGNAL_WORKBENCH_MODEL_DAILY_REQUEST_LIMIT: '0', OMNISIGNAL_WORKBENCH_SECURE_COOKIE: 'false', OMNISIGNAL_KNOWLEDGE_SIGNING_KEY_FILE: '', OMNISIGNAL_PREPARATION_DIR: '', OMNISIGNAL_WORKBENCH_WORKER: 'false', OMNISIGNAL_WORKBENCH_VALIDATED_SOURCE_IDS: 'pexels', OMNISIGNAL_WORKBENCH_PUBLIC_HTML_SOURCE_IDS: '', OMNISIGNAL_PEXELS_API_KEY: '', OMNISIGNAL_PEXELS_API_KEY_FILE: '' } });
   server.once('error', () => failures.push('Python process failed to start. Check SMOKE_PYTHON.'));
   // Do not print process stderr: environment-owned paths or provider details may be sensitive.
   server.stderr.on('data', () => {});
@@ -256,6 +256,27 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
  const plan = page.locator('article').filter({ has: page.getByRole('heading', { name: planTitle, exact: true }) });
  await plan.waitFor();
  check(await plan.getByRole('button', { name: '运行', exact: true }).isDisabled(), 'new-plan-remains-paused-no-network');
+ if (ownedServer) {
+  await page.getByRole('button', { name: '创建采集计划', exact: true }).click();
+  check(await page.locator('input[name="query"]').count() === 0, 'photo-query-hidden-for-non-pexels-sources');
+  await page.getByRole('combobox', { name: '采集来源', exact: true }).selectOption('pexels');
+  await page.locator('input[name="query"]').waitFor();
+  await page.getByRole('combobox', { name: '采集来源', exact: true }).selectOption('bpando');
+  check(await page.locator('input[name="query"]').count() === 0, 'switching-source-removes-photo-query');
+  await page.getByRole('combobox', { name: '采集来源', exact: true }).selectOption('pexels');
+  const photoPlanTitle = `Pexels 合成暂停计划 ${title.slice(-8)}`;
+  await page.getByRole('textbox', { name: '计划名称', exact: true }).fill(photoPlanTitle);
+  await page.locator('input[name="query"]').fill('packaging design');
+  const createdResponse = page.waitForResponse(response => response.url().endsWith('/workbench/api/plans') && response.request().method() === 'POST');
+  await page.getByRole('button', { name: '创建计划', exact: true }).click();
+  const created = await createdResponse;
+  check(created.status() === 201, 'pexels-query-post-accepted-by-real-api');
+  const createdPlan = await created.json();
+  check(createdPlan.query === 'packaging design' && createdPlan.enabled === false && createdPlan.budget.used === 0 && createdPlan.last_run === null, 'pexels-query-persisted-paused-zero-requests');
+  const photoCard = page.locator('article').filter({ has: page.getByRole('heading', { name: photoPlanTitle, exact: true }) });
+  await photoCard.waitFor();
+  check(await photoCard.getByRole('button', { name: '运行', exact: true }).isDisabled(), 'pexels-plan-cannot-run-without-worker-and-key');
+ }
  await page.screenshot({ path: path.join(results, '03-plans.png'), fullPage: true });
  await page.getByRole('button', { name: '设置', exact: true }).click();
  await page.getByRole('heading', { name: '工作台设置', exact: true }).waitFor();

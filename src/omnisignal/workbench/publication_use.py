@@ -18,9 +18,10 @@ from urllib.parse import urlsplit
 
 from .store import Conflict, require
 from omnisignal.knowledge.scope import validate_library_recipient, recipient_key
+from .source_adapters import SOURCE_CONFIGS as EXTRA_SOURCES
 
 PURPOSE = "company_internal_inspiration"
-SOURCES = {"potw", "adsofbrands", "bpando", "itsnicethat"}
+SOURCES = {"potw", "adsofbrands", "bpando", "itsnicethat"} | set(EXTRA_SOURCES)
 POLICY_KEYS = {"policy_id", "authorized_at", "purpose", "source_ids", "recipient"}
 
 
