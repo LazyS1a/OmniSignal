@@ -5,6 +5,7 @@ import base64
 import hashlib
 import io
 import json
+import logging
 import os
 import threading
 import time
@@ -31,6 +32,16 @@ ACTIVE_JOB_STATES = {"queued", "running", "waiting_remote"}
 DESIGN_FIELDS = {"palette", "typography", "composition", "hierarchy", "imagery",
                  "reusable_ideas", "applicability", "limitations"}
 ANALYSIS_PROJECTION_FIELDS = {"analysis_status", "analysis_job_id", "analysis_suggestion", "analysis_suggestion_revision"}
+LOGGER = logging.getLogger(__name__)
+
+
+def _terminal_error(event, error):
+    # Deliberately omit exception messages/tracebacks: a serializer/driver error
+    # can embed a model response, source text or connection information.
+    name = type(error).__name__
+    allowed = {"OperationalError", "IntegrityError", "ProgrammingError", "DatabaseError",
+               "UnicodeEncodeError", "TypeError", "ValueError", "KeyError", "OSError", "Conflict"}
+    LOGGER.error("analysis_event=%s error_type=%s", event, name if name in allowed else "other")
 
 # Only these fixed messages/codes may cross the provider boundary into storage.
 # Keep the code in the existing reason field; old rows need no schema migration.
@@ -46,6 +57,7 @@ FAILURE_MESSAGES = {
     "response_truncated": "模型返回未完成：上游因输出长度限制停止生成",
     "response_refused": "模型未提供可用分析：上游拒答或内容过滤",
     "response_schema_invalid": "模型返回字段或逐图分类未通过校验",
+    "result_persistence": "模型请求后的任务结果未能完整保存，需检查原任务",
     "unknown_error": "模型分析失败：未能安全识别具体原因",
 }
 FAILURE_REASONS = {code: f"[{code}] {message}；本次请求已记录，不会自动重试。"
@@ -668,6 +680,43 @@ class AnalysisService:
         self.store.audit(db, job["asset_id"], job["actor"], "analysis_" + status,
                          {"job_id": job["id"], "reason": reason, "revision": job["revision"]})
 
+    def _record_terminal_write_failure(self, job, error):
+        """One local finalization attempt, never another model submission.
+
+        The paid-call ledger and remote identity remain intact. A persistent
+        database failure may prevent even this marker, in which case the job
+        stays unresolved and the fixed event explicitly records that fact.
+        """
+        _terminal_error("terminal_write_failed", error)
+        try:
+            with self.store.db() as db:
+                db.execute("BEGIN IMMEDIATE")
+                current = db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job["id"],)).fetchone()
+                if current is None:
+                    return None
+                if current["status"] == "running":
+                    remote = bool(current["remote_request_id"] or current["remote_job_id"])
+                    if remote:
+                        db.execute("UPDATE analysis_jobs SET next_poll_at=? WHERE id=?", (time.time() + 60, job["id"]))
+                    self._finish(db, current, "waiting_remote" if remote else "interrupted", FAILURE_REASONS["result_persistence"])
+                result = dict(db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job["id"],)).fetchone())
+            return result
+        except Exception as failure:
+            _terminal_error("terminal_marker_unwritten", failure)
+            return None
+
+    def _present_committed_job(self, row):
+        # Presentation is outside the transaction: a details/read failure must
+        # never roll back a completed, already-paid result.
+        try:
+            return self._job(row)
+        except Exception as error:
+            _terminal_error("terminal_presentation_failed", error)
+            return {"id": row["id"], "asset_id": row["asset_id"], "status": row["status"],
+                    "charged": bool(row["charged"]), "reason": "任务状态已保存，详情暂时无法读取；不会自动重试模型。",
+                    "suggestion": None, "details": None, "failure_diagnostic": None,
+                    "failure_code": None, "presentation_unavailable": True}
+
     def _image_content(self, asset):
         path = self.store.images / asset["image_file"]
         require(path.parent.resolve() == self.store.images.resolve() and not path.is_symlink()
@@ -771,6 +820,10 @@ class AnalysisService:
                                            getattr(provider, "last_usage", None), system_normalizations=normalizations)
                 else:
                     suggestion = _result(output, asset["id"], require_taxonomy=getattr(provider, "requires_taxonomy", False))
+                # JSON parsing permits lone surrogates; SQLite UTF-8 binding
+                # does not. Reject them before the terminal transaction without
+                # modifying model text or weakening the existing schema checks.
+                json.dumps({"suggestion": suggestion, "details": details}, ensure_ascii=False, allow_nan=False).encode("utf-8")
             except (Conflict, KeyError, TypeError, ValueError, RecursionError) as error:
                 raise AnalysisFailure("response_schema_invalid", diagnostic=schema_diagnostic(error, stage=validation_stage)) from None
             suggestion["model_version"] = provider.model_version
@@ -783,17 +836,21 @@ class AnalysisService:
                 code = exc.code if isinstance(exc, AnalysisFailure) else "unknown_error"
                 diagnostic = exc.diagnostic if isinstance(exc, AnalysisFailure) else None
                 suggestion, status, reason = None, "failed", FAILURE_REASONS.get(code, FAILURE_REASONS["unknown_error"])
-        with self.store.db() as db:
-            db.execute("BEGIN IMMEDIATE")
-            db.execute("UPDATE analysis_jobs SET failure_diagnostic=? WHERE id=?", (encode(diagnostic) if diagnostic else None, job["id"]))
-            if status == "waiting_remote":
-                db.execute("UPDATE analysis_jobs SET next_poll_at=? WHERE id=?", (time.time() + 15, job["id"]))
-            if details is not None and status == "completed":
-                from .design_skills import details_digest
-                db.execute("INSERT INTO analysis_details(job_id,document) VALUES(?,?)", (job["id"], encode(details)))
-                db.execute("UPDATE analysis_jobs SET details_sha256=? WHERE id=?", (details_digest(details), job["id"]))
-            self._finish(db, job, status, reason, suggestion)
-            return self._job(db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job["id"],)).fetchone(), db)
+        try:
+            with self.store.db() as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("UPDATE analysis_jobs SET failure_diagnostic=? WHERE id=?", (encode(diagnostic) if diagnostic else None, job["id"]))
+                if status == "waiting_remote":
+                    db.execute("UPDATE analysis_jobs SET next_poll_at=? WHERE id=?", (time.time() + 15, job["id"]))
+                if details is not None and status == "completed":
+                    from .design_skills import details_digest
+                    db.execute("INSERT INTO analysis_details(job_id,document) VALUES(?,?)", (job["id"], encode(details)))
+                    db.execute("UPDATE analysis_jobs SET details_sha256=? WHERE id=?", (details_digest(details), job["id"]))
+                self._finish(db, job, status, reason, suggestion)
+                terminal = dict(db.execute("SELECT * FROM analysis_jobs WHERE id=?", (job["id"],)).fetchone())
+        except Exception as error:
+            terminal = self._record_terminal_write_failure(job, error)
+        return self._present_committed_job(terminal) if terminal is not None else None
 
     def start(self):
         if self._thread is not None and self._thread.is_alive():
