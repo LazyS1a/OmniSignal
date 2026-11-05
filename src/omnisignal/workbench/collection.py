@@ -24,7 +24,8 @@ from omnisignal.workbench import ad_source, potw_source
 from omnisignal.workbench import source_adapters
 from omnisignal.workbench.source_readiness import PhotoPageCursor, pexels_api_key, source_readiness
 from omnisignal.workbench.potw_transport import POTWTransport
-from omnisignal.workbench.acquisition import ArchiveCursor, ProjectProgress, ProjectRetry, daily_target, progress
+from omnisignal.workbench.acquisition import (ArchiveCursor, ProjectProgress, ProjectRetry,
+    daily_target, progress, fair_due_plans, record_plan_turn, source_budget, source_quotas)
 
 SOURCE_CONFIGS = {**SOURCES, "adsofbrands": ad_source.CONFIG, "potw": potw_source.CONFIG,
                   **source_adapters.SOURCE_CONFIGS}
@@ -59,6 +60,24 @@ ERRORS = {
     "pexels_http_error": "Pexels 图片 API 返回异常，当前分页进度已保留。",
     "pexels_network_error": "Pexels 图片 API 连接失败，当前分页进度已保留。",
     "listing_structure_or_access_unavailable": "未能读取此来源的项目列表，请核对页面结构或正常登录状态。",
+    "browser_config_invalid": "浏览器采集配置无效，请检查专用会话配置。",
+    "browser_session_not_configured": "尚未配置此来源的专用浏览器会话。",
+    "browser_cursor_invalid": "采集进度校验失败，已有图片保留，请管理员检查进度记录。",
+    "browser_collection_failed": "浏览器采集未完成，进度已保留，等待检查后再继续。",
+    "browser_unavailable": "采集运行环境尚未安装浏览器组件。",
+    "login_required": "来源需要正常登录，采集已暂停；登录专用采集浏览器后再手动继续。",
+    "session_expired": "来源登录已失效，进度已保留；重新登录后再手动继续。",
+    "challenge": "来源出现人工验证，采集已暂停，等待处理。",
+    "identity_conflict": "来源页与项目编号不一致，已保留进度等待核对，未自动归入其他项目。",
+    "structure_unavailable": "未能读取实际项目图片，进度已保留，请检查来源页面。",
+    "source_quota_reached": "此来源的今日图片配额已达到，未处理项目已保留。",
+    "no_usable_images": "当前项目没有通过解码与尺寸校验的图片，待检查。",
+    "request_limit": "本轮浏览器请求上限已达到，项目进度已保留。",
+    "time_limit": "本轮浏览器运行时间已达到上限，项目进度已保留。",
+    "policy_denied": "来源访问检查未通过，已停止采集并保留进度。",
+    "access_denied": "来源拒绝访问，已停止采集；请检查正常访问状态后再继续。",
+    "profile_unmanaged": "此目录不是 Omni 专用浏览器会话，未读取现有个人浏览器配置。",
+    "profile_busy": "专用采集浏览器正在使用中，当前任务保留进度。",
 }
 
 
@@ -91,6 +110,16 @@ class BudgetedFetcher(PublicFetcher):
         # failed HTTP attempts and image requests, with no refund after failure.
         self.opener = _BudgetedOpener(self.opener, reserve)
         self.stop_event = threading.Event()
+
+    def before_browser_request(self, url):
+        """Use the HTTP policy and interruptible host delay without a body GET."""
+        self.check_access(url)
+        host = urllib.parse.urlsplit(url).hostname
+        wait = self.delays.get(host, 10) - (time.monotonic() - self.last.get(host, 0))
+        if self.stop_event.is_set() or (wait > 0 and self.stop_event.wait(wait)):
+            raise FetchError("worker_stopped")
+        self.last[host] = time.monotonic()
+        return True
 
     def _request(self, url, cap):
         # Keep the parent's security checks, with interruptible host-rate waits.
@@ -205,10 +234,11 @@ def source_fetcher(site, config, reserve, default=BudgetedFetcher):
 
 
 class WorkbenchCollector:
-    def __init__(self, store, *, fetcher_factory=None, clock=time.time, pexels_client=None):
+    def __init__(self, store, *, fetcher_factory=None, clock=time.time, pexels_client=None, browser_factory=None):
         self.store, self.clock = store, clock
         self.factory = fetcher_factory
         self.pexels_client = pexels_client
+        self.browser_factory = browser_factory
         self._stopping = threading.Event()
         self._wake = threading.Event()
         self._queue = queue.Queue(maxsize=20)
@@ -287,7 +317,7 @@ class WorkbenchCollector:
     def sweep(self):
         self.store.heartbeat()
         results = []
-        for plan in self.store.list_plans(raw=True):
+        for plan in fair_due_plans(self.store, self.store.list_plans(raw=True)):
             if self._stopping.is_set():
                 break
             if plan["enabled"] and plan["next_run"] <= self.clock():
@@ -300,7 +330,16 @@ class WorkbenchCollector:
         if self._stopping.is_set():
             return None
         target = daily_target()
+        managed = bool(target) or source_quotas() is not None
         if target and progress(self.store)["remaining"] == 0:
+            return None
+        current = next((p for p in self.store.list_plans(raw=True) if p["id"] == plan_id), None)
+        if current is None or source_budget(self.store, current["source_id"])["allowed_remaining"] == 0:
+            return None
+        from .browser_jobs import session_state
+        # A known access failure needs an explicit operator recheck. Polling and
+        # process restarts never retry a login/challenge/identity conflict.
+        if not force and session_state(self.store, current["source_id"]).get("state") in {"expired", "blocked"}:
             return None
         run_id = self.store.claim_plan(plan_id, force=force)
         if run_id is None:
@@ -319,6 +358,7 @@ class WorkbenchCollector:
 
         try:
             plan = next(p for p in self.store.list_plans(raw=True) if p["id"] == plan_id)
+            record_plan_turn(self.store, plan)
             site = plan["source_id"]
             if site not in SOURCE_CONFIGS:
                 raise FetchError("unsupported_source")
@@ -326,15 +366,23 @@ class WorkbenchCollector:
             if readiness["state"] != "ready":
                 raise FetchError(readiness["state"])
             config = SOURCE_CONFIGS[site]
+            if readiness.get("transport") == "browser":
+                config = {**config, "hosts": [*config["hosts"], "s.pinimg.com"]}
             fetcher = self._build_fetcher(site, config, reserve)
             if isinstance(fetcher, (BudgetedFetcher, POTWTransport)):
                 fetcher.stop_event = self._stopping
+            if readiness.get("transport") == "browser":
+                from .browser_jobs import run_browser_job
+                result = run_browser_job(self.store, plan, reserve, fetcher, self._stopping,
+                                         provider_factory=self.browser_factory, force=force)
+                self.store.finish_run(plan_id, run_id, result["status"], result["reason"], result["imported"])
+                return {"run_id": run_id, **result, "acquisition": progress(self.store)}
             if site == "pexels":
                 return self._run_pexels(plan, run_id, reserve, fetcher, target)
             listing, urls = _discover(site, config, fetcher)
             if not urls:
                 raise FetchError("listing_structure_changed")
-            cursor = ArchiveCursor(self.store, site, config["listing"]) if target and site not in source_adapters.SOURCE_CONFIGS else None
+            cursor = ArchiveCursor(self.store, site, config["listing"]) if managed and site not in source_adapters.SOURCE_CONFIGS else None
             if cursor:
                 cursor.observe(listing, config["listing"])
             known = set(self.store.known_project_ids(site))
@@ -345,21 +393,21 @@ class WorkbenchCollector:
             page_url, visited_pages = None, set()
             # Always check fresh listing first, then at most three advertised
             # archive pages. HTTP allowance and crawl-delay still apply to all.
-            for page_number in range(4 if target else 1):
+            for page_number in range(4 if managed else 1):
                 bounded, unresolved = False, False
                 for url in urls:
                     identity = project_id(site, url)
-                    receipt = ProjectProgress(self.store, site, identity) if target else None
+                    receipt = ProjectProgress(self.store, site, identity) if managed else None
                     if (receipt.complete if receipt else identity in known):
                         continue
-                    retry = ProjectRetry(self.store, identity) if target else None
+                    retry = ProjectRetry(self.store, identity) if managed else None
                     if retry and retry.deferred:
                         unresolved = True
                         skipped += 1
                         continue
                     if identity in seen:
                         continue
-                    if projects >= project_limit or attempts >= attempt_limit or (target and progress(self.store)["remaining"] == 0):
+                    if projects >= project_limit or attempts >= attempt_limit or source_budget(self.store, site)["allowed_remaining"] == 0:
                         bounded = True
                         break
                     seen.add(identity)
@@ -376,8 +424,8 @@ class WorkbenchCollector:
                         for position, candidate in enumerate(planned, start=1):
                             if receipt and receipt.considered(candidate["url"]):
                                 continue
-                            if image_count >= 3 or (target and progress(self.store)["remaining"] == 0):
-                                bounded = bool(target and progress(self.store)["remaining"] == 0)
+                            if image_count >= 3 or source_budget(self.store, site)["allowed_remaining"] == 0:
+                                bounded = source_budget(self.store, site)["allowed_remaining"] == 0
                                 break
                             content = fetcher.get(candidate["url"], image=True)
                             try:
@@ -386,6 +434,9 @@ class WorkbenchCollector:
                                 if receipt:
                                     receipt.record(candidate["url"], False)
                                 continue
+                            if source_budget(self.store, site)["allowed_remaining"] == 0:
+                                bounded = True
+                                break
                             result = self.store.import_asset({
                                 "title": article["title"][:500], "brand": "",
                                 "description": _image_description(article, candidate, index=position, total=len(planned)),
@@ -393,7 +444,7 @@ class WorkbenchCollector:
                                 "source_id": site, "project_id": identity,
                                 **({"collection_evidence": _collection_evidence(article, candidate)}
                                    if site in source_adapters.SOURCE_CONFIGS else {}),
-                            }, content, actor="collector", deduplicate_images=bool(target))
+                            }, content, actor="collector", deduplicate_images=managed)
                             image_count += 1
                             imported += int(result["created"])
                             if receipt:
@@ -449,7 +500,7 @@ class WorkbenchCollector:
             status, reason = "partial" if imported else "failed", ERRORS["unexpected_error"]
         self.store.finish_run(plan_id, run_id, status, reason, imported)
         return {"run_id": run_id, "status": status, "reason": reason, "imported": imported,
-                "acquisition": progress(self.store) if target else None}
+                "acquisition": progress(self.store) if managed else None}
 
     def _run_pexels(self, plan, run_id, reserve, fetcher, target):
         imported, status, reason = 0, "ok", "本次检查完成，没有发现新的图片。"
@@ -462,7 +513,7 @@ class WorkbenchCollector:
             while considered < limit and pages < 3:
                 if self._stopping.is_set():
                     raise FetchError("worker_stopped")
-                if target and progress(self.store)["remaining"] == 0:
+                if source_budget(self.store, "pexels")["allowed_remaining"] == 0:
                     break
                 if cursor.state["empty_at"] is not None:
                     break
@@ -476,7 +527,7 @@ class WorkbenchCollector:
                         break
                 items = cursor.state["items"]
                 while cursor.state["index"] < len(items) and considered < limit:
-                    if target and progress(self.store)["remaining"] == 0:
+                    if source_budget(self.store, "pexels")["allowed_remaining"] == 0:
                         break
                     article = items[cursor.state["index"]]
                     identity = project_id("pexels", article["source_url"])
@@ -484,6 +535,8 @@ class WorkbenchCollector:
                         candidate = article["candidates"][0]
                         content = fetcher.get(candidate["url"], image=True)
                         inspect_image(content, set())
+                        if source_budget(self.store, "pexels")["allowed_remaining"] == 0:
+                            break
                         result = self.store.import_asset({
                             "title": article["title"][:500], "brand": "",
                             "description": _image_description(article, candidate, index=1, total=1),

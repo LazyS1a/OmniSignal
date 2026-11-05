@@ -16,6 +16,7 @@ import yaml
 
 from . import auth
 from .store import Conflict, Store, encode, sources, stamp
+from .source_operations import operational_sources
 
 
 BASE="/workbench/api"
@@ -191,7 +192,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
     def summary(identity=Depends(auth.principal)):
         plans=store.list_plans()
         return {"counts":store.counts(),"model":analysis.configuration(),
-                "sources":sources(),"budget":{"request_limit":sum(p["request_limit"] for p in plans),"used":sum(p["budget"]["used"] for p in plans),"period":"day","timezone":"UTC","actual_cost":None}}
+                "sources":operational_sources(store,worker_enabled=bool(app.state.collector)),"budget":{"request_limit":sum(p["request_limit"] for p in plans),"used":sum(p["budget"]["used"] for p in plans),"period":"day","timezone":"UTC","actual_cost":None}}
 
     @app.get(BASE+"/taxonomy")
     def taxonomy(identity=Depends(auth.principal)):
@@ -249,7 +250,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
 
     @app.get(BASE+"/plans")
     def plans(identity=Depends(auth.principal)):
-        return {"items":store.list_plans(),"sources":sources(),"worker":store.worker_status()}
+        return {"items":store.list_plans(),"sources":operational_sources(store,worker_enabled=bool(app.state.collector)),"worker":store.worker_status()}
 
     @app.get(BASE+"/analysis/config")
     def analysis_config(identity=Depends(auth.principal)):
@@ -330,7 +331,7 @@ def create_app(root=None, *, start_worker=None, frontend=None):
     def get_sources(include_internal:bool=False,identity=Depends(auth.principal)):
         if include_internal and identity["role"]!="admin":
             raise HTTPException(403,"旧来源诊断需要管理员权限")
-        return {"items":sources()+(legacy_sources() if include_internal else [])}
+        return {"items":operational_sources(store,worker_enabled=bool(app.state.collector))+(legacy_sources() if include_internal else [])}
 
     @app.get(BASE+"/settings")
     def settings(identity=Depends(auth.principal)):

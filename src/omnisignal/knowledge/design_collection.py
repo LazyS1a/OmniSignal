@@ -62,8 +62,11 @@ class PublicFetcher:
         except (OSError, urllib.error.URLError):
             raise FetchError("network_error") from None
 
-    def get(self, url, *, image=False):
+    def check_access(self, url):
+        """Apply the same robots policy before HTTP or browser navigation."""
         p = urllib.parse.urlsplit(url)
+        if p.scheme != "https" or p.hostname not in self.hosts or p.username or p.password or p.port not in (None, 443):
+            raise FetchError("outside_host_scope")
         if p.hostname not in self.robots:
             rp = urllib.robotparser.RobotFileParser()
             try:
@@ -79,6 +82,10 @@ class PublicFetcher:
                 rp.parse([])
             self.robots[p.hostname] = rp
         if not self.robots[p.hostname].can_fetch(USER_AGENT, url): raise FetchError("robots_denied")
+        return True
+
+    def get(self, url, *, image=False):
+        self.check_access(url)
         data, kind = self._request(url, 5_000_000)
         if image:
             if kind not in {"image/jpeg", "image/png", "image/webp"}: raise FetchError("not_static_image")

@@ -42,6 +42,14 @@ def source_readiness(source):
     verified = source in _ids("OMNISIGNAL_WORKBENCH_VALIDATED_SOURCE_IDS")
     if not verified:
         return {"verified": False, "state": "source_not_validated", "reasons": ["此来源尚未完成运营采集验收"]}
+    if source == "pinterest":
+        from .browser_jobs import browser_config
+        try:
+            configured = browser_config(source)
+        except ValueError:
+            return {"verified": True, "state": "browser_config_invalid", "reasons": ["专用浏览器采集配置无效"]}
+        if configured is not None:
+            return {"verified": True, "state": "ready", "reasons": [], "transport": "browser", "session": "not_checked"}
     if source == "pexels":
         try:
             key = pexels_api_key()

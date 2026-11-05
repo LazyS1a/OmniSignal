@@ -34,7 +34,17 @@ export type Asset = {
  analysis_job_id?: string; analysis_status?: string; analysis_details?: AnalysisDetails | null; analysis_details_status?: 'none' | 'current' | 'missing' | 'stale'; analysis_quality?: AnalysisQuality; processing_group?: ProcessingGroup;
  audit?: Array<{ action?: string; actor?: string; at?: string; created_at?: string; reason?: string }>;
 };
-export type Source = { id: string; label: string; category: string; verified: boolean; description?: string; requires_credentials?: boolean };
+export type SourceOperations = {
+ plan_count: number; enabled_plan_count: number; last_collection_at: string | null; last_success_at: string | null;
+ today: { day: string | null; timezone: string; imported: number | null; scope: string };
+ last_failure: { at: string | null; code: string; label: string } | null;
+ session: { kind: string; state: string; label: string; checked_at: string | null; expires_at: string | null; reason_code: string | null };
+ state: string; label: string; continuous_collection_verified: boolean | null;
+ collection_evidence: { successful_runs: number; successful_days: number; level: string };
+ quota: { global_remaining: number | null; source_target: number | null; source_used: number; source_remaining: number | null; allowed_remaining: number | null; quota_configured: boolean } | null;
+ quota_error: string | null;
+};
+export type Source = { id: string; label: string; category: string; verified: boolean; description?: string; requires_credentials?: boolean; operations?: SourceOperations };
 export type Plan = {
  id: string; name: string; source_id: string; enabled: boolean; revision: number;
  readiness: { state: string; label: string; reasons: string[] };

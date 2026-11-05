@@ -25,9 +25,15 @@ def progress(store):
     start = datetime.combine(local.date(), time(), local.tzinfo).astimezone(timezone.utc)
     end = start + timedelta(days=1)
     with store.db() as db:
-        rows = db.execute("""SELECT json_extract(a.document,'$.sha256') AS sha,
-            json_extract(a.document,'$.source_id') AS source FROM assets a
-            WHERE julianday(a.created_at)>=julianday(?) AND julianday(a.created_at)<julianday(?)
+        rows = db.execute("""WITH first_content AS (
+            SELECT id,document,created_at,ROW_NUMBER() OVER (
+                PARTITION BY json_extract(document,'$.sha256')
+                ORDER BY julianday(created_at),id) AS content_order FROM assets
+            WHERE json_extract(document,'$.sha256') IS NOT NULL)
+            SELECT json_extract(a.document,'$.sha256') AS sha,
+            json_extract(a.document,'$.source_id') AS source FROM first_content a
+            WHERE a.content_order=1
+            AND julianday(a.created_at)>=julianday(?) AND julianday(a.created_at)<julianday(?)
             AND EXISTS(SELECT 1 FROM audit x WHERE x.entity=a.id AND x.actor='collector' AND x.action='import')
             """, (start.isoformat(), end.isoformat())).fetchall()
     per_source = {}
@@ -39,6 +45,132 @@ def progress(store):
             "new_unique_images": actual, "remaining": max(0, target-actual) if target else None,
             "by_source": {key: len(values) for key, values in per_source.items()},
             "basis": "new_to_library_distinct_content", "newly_published_on_source": None}
+
+
+SOURCE_QUOTA_ENV = "OMNISIGNAL_WORKBENCH_COLLECTION_SOURCE_QUOTAS"
+FAIR_CURSOR_KEY = "collection.scheduler-fair.v1"
+
+
+def source_quotas(*, target=None):
+    """Explicit source caps; absent preserves the legacy global-only policy.
+
+    A global target of zero retains its legacy meaning (no global limit), but
+    explicit source caps remain finite and unlisted sources get zero. Unused
+    or unallocated shares never move to another source automatically.
+    """
+    raw = os.getenv(SOURCE_QUOTA_ENV)
+    if raw is None:
+        return None
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("invalid_collection_source_quotas")
+            result[key] = value
+        return result
+    try:
+        if len(raw) > 16000:
+            raise ValueError()
+        value = json.loads(raw, object_pairs_hook=pairs)
+        maximum = daily_target() if target is None else target
+        if (not isinstance(value, dict) or len(value) > 64
+                or any(not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", key)
+                       or type(limit) is not int or not 0 <= limit <= 2000
+                       for key, limit in value.items())
+                or sum(value.values()) > (maximum or 2000)):
+            raise ValueError()
+        return value
+    except (ValueError, TypeError, RecursionError):
+        raise ValueError("invalid_collection_source_quotas") from None
+
+
+def _source_budget(totals, source_id, quotas):
+    used = totals["by_source"].get(source_id, 0)
+    target = quotas.get(source_id, 0) if quotas is not None else None
+    source_remaining = max(0, target - used) if target is not None else None
+    limits = [n for n in (totals["remaining"], source_remaining) if n is not None]
+    return {"source_id": source_id, "date": totals["date"], "timezone": "Asia/Shanghai",
+            "global_target": totals["target"], "global_remaining": totals["remaining"],
+            "source_target": target, "source_used": used, "source_remaining": source_remaining,
+            "allowed_remaining": min(limits) if limits else None,
+            "quota_configured": quotas is not None,
+            "configured_source_total": sum(quotas.values()) if quotas is not None else None,
+            "unallocated_target": max(0, totals["target"] - sum(quotas.values())) if quotas is not None and totals["target"] else None,
+            "basis": totals["basis"], "redistribution": "none"}
+
+
+def source_budget(store, source_id, *, totals=None):
+    """Read-only allowance, not a reservation. Recheck before each image import.
+
+    The caller must retain the collector's existing single-worker serialization;
+    taking a snapshot here does not make concurrent import transactions atomic.
+    """
+    totals = progress(store) if totals is None else totals
+    return _source_budget(totals, source_id, source_quotas(target=totals["target"]))
+
+
+def _fair_cursor(db):
+    row = db.execute("SELECT value FROM meta WHERE key=?", (FAIR_CURSOR_KEY,)).fetchone()
+    try:
+        state = json.loads(row[0]) if row else {"schema_version": 1, "last_source": None, "last_plan_by_source": {}}
+        if (not isinstance(state, dict) or set(state) != {"schema_version", "last_source", "last_plan_by_source"}
+                or type(state["schema_version"]) is not int or state["schema_version"] != 1
+                or state["last_source"] is not None and not isinstance(state["last_source"], str)
+                or not isinstance(state["last_plan_by_source"], dict) or len(state["last_plan_by_source"]) > 128
+                or any(not isinstance(k, str) or not isinstance(v, str) for k, v in state["last_plan_by_source"].items())):
+            raise ValueError()
+        return state
+    except (ValueError, TypeError, RecursionError):
+        raise ValueError("invalid_collection_fair_cursor") from None
+
+
+def _after(values, previous):
+    ordered = sorted(values)
+    return [v for v in ordered if previous is None or v > previous] + [v for v in ordered if previous is not None and v <= previous]
+
+
+def fair_due_plans(store, plans, *, readiness=None):
+    """Read-only round-robin view; paused/unready/capped plans take no turn.
+
+    Plans within the same source also rotate, sharing that source's quota.
+    Persist a turn only after a successful claim with record_plan_turn().
+    """
+    if readiness is None:
+        from .source_readiness import source_readiness
+        readiness = source_readiness
+    totals = progress(store)
+    quotas = source_quotas(target=totals["target"])
+    with store.db() as db:
+        state = _fair_cursor(db)
+    groups = {}
+    for plan in plans:
+        if (not plan.get("enabled") or plan.get("active_run") or plan["next_run"] > store.clock()
+                or readiness(plan["source_id"]).get("state") != "ready"
+                or _source_budget(totals, plan["source_id"], quotas)["allowed_remaining"] == 0):
+            continue
+        groups.setdefault(plan["source_id"], {})[plan["id"]] = plan
+    sources = _after(groups, state["last_source"])
+    queues = {source: _after(groups[source], state["last_plan_by_source"].get(source)) for source in sources}
+    result = []
+    for index in range(max((len(queue) for queue in queues.values()), default=0)):
+        for source in sources:
+            if index < len(queues[source]):
+                result.append(groups[source][queues[source][index]])
+    return result
+
+
+def record_plan_turn(store, plan):
+    """Persist successful claim order, never spend image quota merely by polling."""
+    with store.db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT document,active_run FROM plans WHERE id=?", (plan["id"],)).fetchone()
+        if not row or not row["active_run"] or json.loads(row["document"])["source_id"] != plan["source_id"]:
+            raise ValueError("collection_turn_requires_claimed_plan")
+        state = _fair_cursor(db)
+        state["last_source"] = plan["source_id"]
+        state["last_plan_by_source"][plan["source_id"]] = plan["id"]
+        db.execute("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                   (FAIR_CURSOR_KEY, json.dumps(state, separators=(",", ":"))))
 
 
 def listing_links(site, document, base):

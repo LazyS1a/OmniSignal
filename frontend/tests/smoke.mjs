@@ -249,6 +249,14 @@ uvicorn.run(create_app(root,start_worker=False,frontend=os.environ['SMOKE_FRONTE
  }
 
  await page.getByRole('button', { name: '采集', exact: true }).click();
+ await page.getByRole('heading', { name: '来源运行状态', exact: true }).waitFor();
+ const pinterestOperations = page.locator('[data-source-id="pinterest"]');
+ await pinterestOperations.waitFor();
+ check(await pinterestOperations.getByText('尚未创建正式采集计划', {exact:true}).isVisible(), 'source-with-no-plan-not-labelled-as-running');
+ check(await pinterestOperations.getByText('0 个 / 0 个启用', {exact:true}).isVisible(), 'source-plan-count-derived-from-server');
+ check(await pinterestOperations.getByText('浏览器会话未配置', {exact:true}).isVisible(), 'missing-browser-session-is-explicit');
+ check(await page.getByText('计划、会话和实际入池分别显示。单图人工验证不代表持续采集可用。', {exact:true}).isVisible(), 'single-image-proof-not-continuous-availability');
+ check(await page.locator('.source-overview').getByText('已验证',{exact:true}).count()===0,'no-static-verified-source-badge');
  await page.getByRole('button', { name: '创建采集计划', exact: true }).click();
  const planTitle = `合成测试计划 · 暂停不联网 ${title.slice(-8)}`;
  await page.getByRole('textbox', { name: '计划名称', exact: true }).fill(planTitle);
