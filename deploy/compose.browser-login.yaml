@@ -13,10 +13,10 @@ services:
       HOME: /tmp/omnisignal-home
     volumes:
       - type: bind
-        source: ${OMNISIGNAL_BROWSER_SESSIONS:?Set dedicated private sessions directory}
-        target: /app/browser-sessions
+        source: ${OMNISIGNAL_BROWSER_SESSIONS:?Set dedicated private sessions directory}/${OMNISIGNAL_BROWSER_SOURCE:-pinterest}
+        target: /app/browser-sessions/${OMNISIGNAL_BROWSER_SOURCE:-pinterest}
         bind: {create_host_path: false}
-    command: ["python", "/app/scripts/browser_login_desktop.py", "--profile-dir", "/app/browser-sessions/pinterest", "--max-seconds", "1200"]
+    command: ["python", "/app/scripts/browser_login_desktop.py", "--source", "${OMNISIGNAL_BROWSER_SOURCE:-pinterest}", "--profile-dir", "/app/browser-sessions/${OMNISIGNAL_BROWSER_SOURCE:-pinterest}", "--max-seconds", "1200"]
     read_only: true
     mem_limit: 1536m
     cpus: 1.0

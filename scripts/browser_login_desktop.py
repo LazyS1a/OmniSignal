@@ -10,6 +10,8 @@ import subprocess
 import sys
 import time
 
+from pinterest_browser_session import SOURCE_URLS
+
 
 def stop(process):
     """Terminate only the process group created by this helper, including browsers."""
@@ -31,6 +33,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile-dir", required=True, type=Path)
     parser.add_argument("--max-seconds", type=int, default=1200)
+    parser.add_argument("--source", choices=tuple(SOURCE_URLS), default="pinterest")
     args = parser.parse_args(argv)
     if os.name != "posix" or not sys.stdin.isatty():
         print(json.dumps({"state": "linux_interactive_terminal_required"}))
@@ -70,9 +73,9 @@ def main(argv=None):
         launch(["x11vnc", "-display", ":99", "-localhost", "-rfbport", "5901", "-forever", "-shared", "-nopw", "-quiet"])
         launch(["websockify", "--web=/usr/share/novnc", "0.0.0.0:6080", "127.0.0.1:5901"])
         print("仅通过 SSH 转发打开本机 http://127.0.0.1:16080/vnc.html；请自行正常登录网站。", flush=True)
-        print("本入口最多运行 20 分钟；结束后在此终端按 Enter。不会读取账号、验证码或 Cookie。", flush=True)
+        print(f"本入口最多运行 {args.max_seconds} 秒；结束后在此终端按 Enter。不会读取账号、验证码或 Cookie。", flush=True)
         login = launch([sys.executable, str(Path(__file__).with_name("pinterest_browser_session.py")),
-                        "login", "--profile-dir", str(args.profile_dir)], interactive=True)
+                        "login", "--profile-dir", str(args.profile_dir), "--source", args.source], interactive=True)
         try:
             return login.wait(timeout=args.max_seconds)
         except subprocess.TimeoutExpired:

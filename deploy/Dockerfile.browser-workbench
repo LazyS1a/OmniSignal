@@ -7,14 +7,12 @@ FROM ${PYTHON_IMAGE} AS runtime
 COPY --from=uv /uv /uvx /usr/local/bin/
 ARG OMNISIGNAL_UID=1000
 ARG OMNISIGNAL_GID=1000
-ARG SOURCE_COMMIT
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/opt/venv \
     PATH="/opt/venv/bin:$PATH" PYTHONPATH=/app/src PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
-    HOME=/tmp/omnisignal-home OMNISIGNAL_SOURCE_COMMIT=${SOURCE_COMMIT}
+    HOME=/tmp/omnisignal-home
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN python -c "import os,re; assert re.fullmatch('[0-9a-f]{40}',os.environ['OMNISIGNAL_SOURCE_COMMIT']), 'full_source_commit_required'" \
-    && uv sync --frozen --no-dev --no-install-project --extra browser \
+RUN uv sync --frozen --no-dev --no-install-project --extra browser \
     && python -m playwright install --with-deps chromium \
     && test "$OMNISIGNAL_UID" -ge 100 && test "$OMNISIGNAL_GID" -ge 100 \
     && if getent passwd "$OMNISIGNAL_UID" >/dev/null; then echo 'requested_uid_already_exists' >&2; exit 1; fi \
@@ -22,6 +20,9 @@ RUN python -c "import os,re; assert re.fullmatch('[0-9a-f]{40}',os.environ['OMNI
     && useradd --uid "$OMNISIGNAL_UID" --gid "$OMNISIGNAL_GID" --no-create-home --home-dir /tmp/omnisignal-home omnisignal \
     && test "$(id -u omnisignal)" = "$OMNISIGNAL_UID" && test "$(id -g omnisignal)" = "$OMNISIGNAL_GID" \
     && chmod -R a+rX /opt/playwright
+ARG SOURCE_COMMIT
+ENV OMNISIGNAL_SOURCE_COMMIT=${SOURCE_COMMIT}
+RUN python -c "import os,re; assert re.fullmatch('[0-9a-f]{40}',os.environ['OMNISIGNAL_SOURCE_COMMIT']), 'full_source_commit_required'"
 COPY src/omnisignal ./src/omnisignal
 COPY governance/source_registry.yaml ./governance/source_registry.yaml
 COPY frontend/dist ./frontend/dist
