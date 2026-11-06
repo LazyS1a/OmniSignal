@@ -17,7 +17,7 @@ import re
 import threading
 
 from omnisignal.knowledge.release import KnowledgeError, _lock, read_latest
-from .publishing import publish_store_assets, publication_snapshot_ids, select_capacity_batch, CAPACITY_FAILURES
+from .publishing import publish_store_assets, publication_snapshot_ids, select_capacity_batch, CAPACITY_FAILURES, current_publication_latest, publication_signed_exists
 from .review import apply_automated_review, fresh_review, validate_automated_quality
 from .store import Conflict, asset_row_consistent, encode, require, stamp
 from .taxonomy import fresh_taxonomy
@@ -199,7 +199,7 @@ class AutoEditorial:
         root = target_root(self.store, config.get("publication_authorized"), self.publication_root)
         ids = publication_snapshot_ids(batch, recipient)
         with _lock(root / ".workbench"), _lock(root):
-            if any((root / "releases" / value).exists() or (root / "releases" / value).is_symlink()
+            if any(publication_signed_exists(root, value)
                    or db.execute("SELECT 1 FROM releases WHERE version=?", (value,)).fetchone() for value in ids):
                 return False
             deleted = db.execute("DELETE FROM meta WHERE key=? AND value=?", (self._publication_batch_key(config), encode(batch)))
@@ -413,7 +413,7 @@ class AutoEditorial:
             recipient = library_recipient(config.get("publication_authorized")) if config else None
             delivered = db.execute("SELECT count(*) FROM publication_target_deliveries WHERE recipient_key=?",
                                    (recipient_key(recipient),)).fetchone()[0] if recipient is not None else None
-            target_latest = read_latest(target_root(self.store, config.get("publication_authorized"), self.publication_root)) if recipient is not None else None
+            target_latest = current_publication_latest(target_root(self.store, config.get("publication_authorized"), self.publication_root)) if recipient is not None else None
         return {"status": state, "actor": ACTOR, "source_ids": config["source_ids"] if config else [],
                 "publication_recipient": recipient, "target_delivered_revisions": delivered, "target_latest_release": target_latest,
                 "auto_publish": bool(config and config["auto_publish"]),

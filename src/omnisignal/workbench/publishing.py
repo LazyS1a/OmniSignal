@@ -30,6 +30,7 @@ from omnisignal.knowledge.taxonomy import TAXONOMY_VERSION
 from .publication_use import delivery_projection, validate_policy, library_recipient, target_delivered, ensure_table
 from .library_publication import base_root, target_root, require_library_target, publication_targets
 from omnisignal.knowledge.scope import recipient_key, envelope_recipient
+from omnisignal.knowledge import snapshot_v3
 PURPOSES = {"brand", "conversion"}
 CHECKPOINT_CHAIN_LIMIT = 16
 PUBLICATION_BUDGET_ENV = "OMNISIGNAL_WORKBENCH_PUBLICATION_MAX_PACKAGE_MIB"
@@ -40,7 +41,87 @@ CAPACITY_FAILURES = frozenset({
     "publication image budget exceeded", "package size limit: publication byte budget exceeded",
     "publication records file exceeds receiver capacity", "publication manifest exceeds size limit",
     "record too large", "oversized record",
+    "snapshot record count limit", "snapshot part count limit", "snapshot partition depth exhausted",
+    "snapshot manifest size limit", "snapshot image capacity exceeded",
+    "snapshot retained capacity exceeded", "snapshot disk capacity unavailable",
 })
+
+
+def current_publication_latest(root):
+    """A closed feature switch never erases signed history or receipt debt."""
+    legacy, snapshot = read_latest(root), snapshot_v3.read_snapshot_latest(root)
+    _require(legacy is None or snapshot is None or legacy["sequence"] != snapshot["sequence"],
+             "publication sequence conflicts across protocols")
+    return max((pointer for pointer in (legacy, snapshot) if pointer is not None),
+               key=lambda pointer: pointer["sequence"], default=None)
+
+
+def current_publication_cases(root):
+    snapshot = snapshot_v3.read_snapshot_latest(root)
+    if snapshot is not None and current_publication_latest(root) == snapshot:
+        return {key: value for key, value in snapshot_v3.snapshot_cases(root).items() if key not in _withdrawn(Path(root))}
+    return materialize_release(root)
+
+
+def publication_signed_exists(root, release_id):
+    return any(path.exists() or path.is_symlink() for path in (
+        Path(root) / "releases" / release_id, snapshot_v3.storage(root) / "releases" / release_id))
+
+
+def _all_published_ids(root, recipient=None, trusted_keys=None):
+    ids = set(_history(Path(root)))
+    directory = _file(snapshot_v3.storage(root), "releases")
+    if directory.exists():
+        for entry in directory.iterdir():
+            if entry.is_dir():
+                manifest = snapshot_v3.read_manifest(root, entry.name, trusted_keys)
+                _require(manifest["recipient"] == recipient, "snapshot withdrawal recipient mismatch")
+                records, _ = snapshot_v3.snapshot_inventory(root, manifest)
+                ids.update(record["case_id"] for record in records)
+    return ids
+
+
+def _publish_snapshot_assets(root, records, stage, private_key, key_id, recipient, publication_id, before_sign):
+    _require(recipient is not None, "snapshot v3 requires a scoped library recipient")
+    requested = records
+    release_id = publication_id or "ad-snapshot-" + uuid.uuid4().hex[:20]
+    known = _file(snapshot_v3.storage(root), "releases/" + release_id + "/manifest.json")
+    sources = {image["path"]: _file(stage, image["path"]) for record in records for image in record["case"]["images"]}
+    if known.exists():
+        prior = snapshot_v3.read_manifest(root, release_id, {key_id: private_key.public_key()})
+        _require(prior["recipient"] == recipient and prior["request_hash"] == snapshot_v3.request_hash(requested, recipient),
+                 "snapshot recovery content conflict")
+        records, _ = snapshot_v3.snapshot_inventory(root, prior, verify_images=True)
+    else:
+        pointer = snapshot_v3.read_snapshot_latest(root)
+        if pointer is not None:
+            prior = snapshot_v3.read_manifest(root, pointer["release_id"], {key_id: private_key.public_key()})
+            _require(prior["recipient"] == recipient, "snapshot recipient mismatch")
+            historical, _ = snapshot_v3.snapshot_inventory(root, prior)
+            merged = {record["case_id"]: record for record in historical}
+        else:
+            merged = {}
+            for manifest, historical, directory in reversed(_verified_chain(root, key_id, private_key)):
+                _require(envelope_recipient(manifest) == recipient, "snapshot legacy recipient mismatch")
+                for record in historical:
+                    if record["op"] == "delete":
+                        merged.pop(record["case_id"], None)
+                    else:
+                        merged[record["case_id"]] = record
+                        for image in record["case"]["images"]:
+                            sources.setdefault(image["path"], _file(directory, image["path"]))
+        merged.update({record["case_id"]: record for record in records})
+        withdrawn = _withdrawn(root)
+        records = [merged[key] for key in sorted(merged) if key not in withdrawn]
+    manifest = snapshot_v3.publish_snapshot(root=root, release_id=release_id, records=records,
+        requested_records=requested, asset_sources=sources, private_key=private_key, key_id=key_id,
+        recipient=recipient, taxonomy_version=TAXONOMY_VERSION, before_sign=before_sign)
+    path = _file(snapshot_v3.storage(root), "releases/" + release_id + "/manifest.json")
+    return {"version": release_id, "release_id": release_id, "sequence": manifest["sequence"], "recipient": recipient,
+            "schema_version": 3, "status": "published", "receipt_status": "unconfirmed", "manifest_sha256": digest(path.read_bytes()),
+            "assets_count": manifest["records_count"], "requested_assets_count": len(requested), "kind": "snapshot",
+            "key_id": key_id, "taxonomy_version": TAXONOMY_VERSION, "parts_count": len(manifest["parts"]),
+            "image_count": manifest["image_count"], "image_bytes": manifest["image_bytes"]}
 
 
 def publication_package_budget():
@@ -274,6 +355,8 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
     schema 1 stay unchanged; advertising purposes are editorial metadata.
     """
     root = Path(root)
+    _require(snapshot_v3.enabled() or snapshot_v3.read_snapshot_latest(root) is None,
+             "snapshot v3 publication disabled; legacy downgrade forbidden")
     if publication_id is not None:
         _identifier(publication_id)
     _text(actor, "authenticated publisher")
@@ -313,10 +396,12 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
             if path not in image_paths:
                 image_bytes += (stage / path).stat().st_size
                 image_paths.add(path)
-            _require(image_bytes <= publication_package_budget(), "publication image budget exceeded")
+            _require(image_bytes <= (snapshot_v3.image_budget() if snapshot_v3.enabled() else publication_package_budget()), "publication image budget exceeded")
         _require(len({record["case_id"] for record in records}) == len(records),
                  "duplicate asset in publication")
         with _lock(root / ".workbench"):
+            if snapshot_v3.enabled():
+                return _publish_snapshot_assets(root, records, stage, private_key, key_id, recipient, publication_id, before_sign)
             latest = read_latest(root)
             sequence = 1 if latest is None else latest["sequence"] + 1
             release_id = publication_id or f"ad-{sequence}-{uuid.uuid4().hex[:12]}"
@@ -412,7 +497,7 @@ def publish_store_assets(store, asset_ids, actor, *, expected_revisions=None,
         require(not (set(asset_ids) & globally_withdrawn), "素材已有永久撤回签名，不能重新发布")
         # A checkpoint carries the already published inventory forward. Refuse
         # to carry cases whose current source record lost its use basis.
-        for case_id, signed_case in materialize_release(root).items():
+        for case_id, signed_case in current_publication_cases(root).items():
             require(case_id not in globally_withdrawn, "存在尚未完成的跨目标撤回，暂停发布")
             prior_row = db.execute("SELECT * FROM assets WHERE id=?", (case_id,)).fetchone()
             require(prior_row is not None, "已发布素材的本地用途记录缺失，暂停发布")
@@ -456,7 +541,7 @@ def publish_store_assets(store, asset_ids, actor, *, expected_revisions=None,
         # Short names fit ordinary Windows checkout/test roots. A saved old
         # receipt or immutable directory still owns its previous identity;
         # changing formats must not publish a second batch after an upgrade.
-        if (root / "releases" / legacy_id).is_dir() or db.execute("SELECT 1 FROM releases WHERE version=?", (legacy_id,)).fetchone():
+        if publication_signed_exists(root, legacy_id) or db.execute("SELECT 1 FROM releases WHERE version=?", (legacy_id,)).fetchone():
             publication_id = legacy_id
         existing = db.execute("SELECT document FROM releases WHERE version=?", (publication_id,)).fetchone()
         if existing is not None and all(target_delivered(db, item, recipient) if recipient is not None else
@@ -503,7 +588,7 @@ def withdraw_assets(root: Path, assets: list[dict], actor: str, reason: str, *, 
     key_id = os.environ.get("OMNISIGNAL_KNOWLEDGE_KEY_ID") or "ed25519-" + digest(public)[:16]
     _identifier(key_id)
     with _lock(root / ".workbench"):
-        history = _history(root)
+        history = _all_published_ids(root, recipient, {key_id: private_key.public_key()})
         _require(all(asset_id in history for asset_id in ids), "选中素材没有可撤回的签名发布记录")
         previous = [int(path.stem) for path in (root / "withdrawals").glob("*.json")]
         sequence = max(previous, default=0) + 1
@@ -527,7 +612,7 @@ def withdraw_publication_targets(root, assets, actor, reason):
     from .library_publication import publication_targets
     targets, covered = [], set()
     for directory, recipient in publication_targets(root):
-        history = _history(directory)
+        history = _all_published_ids(directory, recipient)
         selected = [asset for asset in assets if asset["id"] in history]
         if selected:
             targets.append((directory, recipient, selected))

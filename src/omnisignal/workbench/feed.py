@@ -128,4 +128,52 @@ def router(root, *, prefix='/knowledge/v1', policy_loader=None):
             raise HTTPException(503,'撤回记录不可用')
         entries=[int(p.stem) for p in folder.glob('*.json') if p.stem.isdigit() and not p.is_symlink()]
         return {'status':'published','withdrawal':scoped_metadata(contained(selected,'withdrawals/'+str(max(entries))+'.json'),recipient),**scope_fields(recipient)} if entries else {'status':'empty','withdrawal':None,**scope_fields(recipient)}
+
+    def snapshot_context(selected_context=Depends(context)):
+        from omnisignal.knowledge import snapshot_v3
+        selected,recipient=selected_context
+        if not snapshot_v3.enabled() or recipient is None:
+            raise HTTPException(404,'分片发布源未开放')
+        return selected,recipient
+
+    def snapshot_manifest(release_id,selected,recipient):
+        from omnisignal.knowledge import snapshot_v3
+        try:
+            value=snapshot_v3.read_manifest(selected,release_id)
+            if value['recipient']!=recipient:
+                raise ValueError('recipient_mismatch')
+            return value
+        except (ValueError,TypeError,OSError):
+            raise HTTPException(404,'分片发布版本不可用') from None
+
+    @feed.get('/snapshots/latest')
+    def snapshot_latest(selected_context=Depends(snapshot_context)):
+        from omnisignal.knowledge import snapshot_v3
+        selected,recipient=selected_context
+        try:
+            pointer=snapshot_v3.read_snapshot_latest(selected)
+            if pointer is not None:
+                snapshot_manifest(pointer['release_id'],selected,recipient)
+            return {'schema_version':3,'recipient':recipient,'status':'published' if pointer else 'empty','release':pointer}
+        except (ValueError,TypeError,OSError):
+            raise HTTPException(503,'分片发布指针校验失败') from None
+
+    @feed.get('/snapshots/releases/{release_id}/manifest')
+    def snapshot_root_manifest(release_id:str,selected_context=Depends(snapshot_context)):
+        from omnisignal.knowledge import snapshot_v3
+        selected,recipient=selected_context
+        snapshot_manifest(release_id,selected,recipient)
+        path=contained(snapshot_v3.storage(selected),'releases/'+release_id+'/manifest.json')
+        return FileResponse(path,media_type='application/json',headers={'Cache-Control':'no-store'})
+
+    @feed.get('/snapshots/releases/{release_id}/{category}/{sha256}')
+    def snapshot_content(release_id:str,category:str,sha256:str,selected_context=Depends(snapshot_context)):
+        from omnisignal.knowledge import snapshot_v3
+        selected,recipient=selected_context
+        snapshot_manifest(release_id,selected,recipient)
+        try:
+            path=snapshot_v3.referenced_file(selected,release_id,category,sha256)
+        except (ValueError,TypeError,OSError):
+            raise HTTPException(404,'文件不属于该发布版本或校验失败') from None
+        return FileResponse(path,media_type='application/octet-stream',headers={'Cache-Control':'private, immutable','ETag':'"'+sha256+'"'})
     return feed

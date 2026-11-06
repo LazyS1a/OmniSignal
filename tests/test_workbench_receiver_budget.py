@@ -39,7 +39,7 @@ class Receiver:
 def setup(tmp_path, monkeypatch):
     store = Store(tmp_path, clock=lambda: datetime(2026, 11, 5, tzinfo=timezone.utc).timestamp())
     signed = []
-    monkeypatch.setattr(gate, "materialize_release", lambda root: {str(n): {"images": [{"path": f"images/{sha(n)}.jpg"}]} for n in signed})
+    monkeypatch.setattr(gate, "current_publication_cases", lambda root: {str(n): {"images": [{"path": f"images/{sha(n)}.jpg"}]} for n in signed})
     monkeypatch.delenv(gate.CONFIG_ENV, raising=False)
     return store, signed
 
@@ -54,6 +54,18 @@ def test_target_is_actual_receipt_not_signed_count(setup):
     assert report["signed_unreceived"] == 3
     assert report["selected_new_unique"] == 2
     assert report["human_reviewed"] is None
+
+
+@pytest.mark.parametrize("target", [400, 500])
+def test_extended_target_reserves_actual_outstanding_images(setup, target):
+    store, signed = setup
+    signed.extend([1, 2])
+    receiver = Receiver([sha(1)], received=target-2)
+    original = receiver.preflight
+    receiver.preflight = lambda hashes: {**original(hashes), "target": target, "remaining": 2}
+    selected, report = gate.select_publication_batch(store, [item(3), item(4)], POLICY, client=receiver)
+    assert selected == [item(3)]
+    assert report["signed_unreceived"] == 1
 
 
 def test_restart_and_next_day_preserve_unreceived_reservation(setup):

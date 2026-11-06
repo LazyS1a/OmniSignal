@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from omnisignal.knowledge.release import materialize_release
+from .publishing import current_publication_cases
 from .library_publication import target_root
 
 CONFIG_ENV = "OMNISIGNAL_WORKBENCH_RECEIPT_CONFIG"
@@ -93,7 +93,7 @@ def _validate(value, requested, day):
         raise ReceiptUnavailable("receiver_daily_policy_not_initialized")
     for key in ("received", "target", "remaining", "baseline_count", "new_unique_images"):
         _require(type(value.get(key)) is int and value[key] >= 0)
-    _require(value["target"] in (100, 200, 300)
+    _require(value["target"] in (100, 200, 300, 400, 500)
              and value["remaining"] == max(0, value["target"] - value["received"]))
     for key in ("baseline_revision", "receipt_revision"):
         _require(isinstance(value.get(key), str) and 0 < len(value[key]) <= 256)
@@ -125,7 +125,8 @@ def select_publication_batch(store, batch, policy, *, publication_root=None, cli
              and len(cache.get("sha256", [])) <= 1000000)
     known = set(cache.get("sha256", [])) if cache.get("baseline_revision") == head["baseline_revision"] else set()
     _require(all(isinstance(x, str) and HASH.fullmatch(x) for x in known))
-    records = materialize_release(target_root(store, policy, publication_root))
+    root = target_root(store, policy, publication_root)
+    records = current_publication_cases(root)
     # Publisher images are content-addressed; legacy/malformed paths fail closed.
     paths = [image["path"] for record in records.values() for image in record.get("images", [])]
     _require(all(isinstance(path, str) and re.fullmatch(r"images/[a-f0-9]{64}\.(?:jpg|jpeg|png|webp)", path) for path in paths))
