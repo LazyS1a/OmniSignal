@@ -19,9 +19,9 @@ from cryptography.hazmat.primitives import serialization
 from PIL import Image
 
 from omnisignal.knowledge.release import (
-    KnowledgeError, MAX_IMAGE_BYTES, MAX_PACKAGE_BYTES, MAX_RECORDS, _file, _identifier, _image, _lock,
-    _require, _text, digest, load_private_key, make_record, publish_release,
-    read_latest, _history, publish_withdrawals, verify_release, materialize_release, _withdrawn,
+    KnowledgeError, MAX_IMAGE_BYTES, MAX_PACKAGE_BYTES, MAX_RECORDS, MAX_RECORD_BYTES, _file, _identifier, _image, _lock,
+    _require, _resolved, _text, canonical, digest, load_private_key, make_record, publish_release,
+    read_latest, _history, publish_withdrawals, verify_release, materialize_release, _withdrawn, release_capacity,
 )
 from .review import DESIGN_FIELDS, fresh_review
 from .taxonomy import fresh_taxonomy
@@ -32,6 +32,56 @@ from .library_publication import base_root, target_root, require_library_target,
 from omnisignal.knowledge.scope import recipient_key, envelope_recipient
 PURPOSES = {"brand", "conversion"}
 CHECKPOINT_CHAIN_LIMIT = 16
+PUBLICATION_BUDGET_ENV = "OMNISIGNAL_WORKBENCH_PUBLICATION_MAX_PACKAGE_MIB"
+RECEIVER_DEFAULT_PACKAGE_MIB = 128
+RECEIVER_RECORD_FILE_BYTES = 128 * 1024 * 1024
+CAPACITY_FAILURES = frozenset({
+    "publication checkpoint exceeds record capacity", "publication checkpoint exceeds image budget",
+    "publication image budget exceeded", "package size limit: publication byte budget exceeded",
+    "publication records file exceeds receiver capacity", "publication manifest exceeds size limit",
+    "record too large", "oversized record",
+})
+
+
+def publication_package_budget():
+    """Match B's default, or an explicit operator-confirmed receiver limit."""
+    raw = os.environ.get(PUBLICATION_BUDGET_ENV, "").strip()
+    _require(not raw or raw.isascii() and raw.isdecimal() and not raw.startswith("0")
+             and len(raw) <= 3 and 1 <= int(raw) <= 512, "invalid receiver package byte budget")
+    return (int(raw) if raw else RECEIVER_DEFAULT_PACKAGE_MIB) * 1024 * 1024
+
+
+def select_capacity_batch(store, batch):
+    """Unsigned candidates only. Reserve maximum legal JSONL per record.
+
+    No permissions, signatures or membership are persisted here. Publication
+    revalidates the frozen snapshot and exact final bytes, including checkpoints.
+    A caller must never use this to split an already frozen/signed recovery batch.
+    """
+    limit = publication_package_budget()
+    selected, images, image_bytes, record_bytes = [], {}, 0, 0
+    for item in batch:
+        asset = store.asset(item["id"])
+        _require(asset["revision"] == item["revision"] and asset["sha256"] == item["sha256"],
+                 "publication capacity snapshot changed")
+        source = _file(store.images, asset["image_file"])
+        _require(source.is_file() and 0 < source.stat().st_size <= MAX_IMAGE_BYTES, "missing/oversized image")
+        size = source.stat().st_size
+        previous_size = images.get(item["sha256"])
+        _require(previous_size is None or previous_size == size, "publication image size conflict")
+        extra = size if previous_size is None else 0
+        reserved = record_bytes + MAX_RECORD_BYTES + 1
+        if len(selected) >= MAX_RECORDS or reserved > RECEIVER_RECORD_FILE_BYTES or reserved + image_bytes + extra > limit:
+            continue
+        selected.append(item)
+        images[item["sha256"]] = size
+        image_bytes += extra
+        record_bytes = reserved
+    return selected, {"status": "bounded", "max_package_bytes": limit,
+                      "limit_source": "explicit" if os.environ.get(PUBLICATION_BUDGET_ENV, "").strip() else "receiver_default_128_mib",
+                      "selected": len(selected), "deferred": len(batch) - len(selected),
+                      "reserved_record_bytes": record_bytes, "image_bytes": image_bytes,
+                      "checkpoint_included": False}
 
 
 def publication_snapshot_ids(items, recipient=None):
@@ -60,23 +110,37 @@ def _verified_chain(root, key_id, private_key):
 
 def _stage_records(records, locations, stage):
     """Copy only signed, hash-checked prior images, never synthesize old cases."""
-    refs = set()
+    refs, sources = set(), {}
+    size = 0
+    for record in records:
+        length = len(canonical(record))
+        _require(length <= MAX_RECORD_BYTES, "oversized record")
+        size += length + 1
+    _require(size <= RECEIVER_RECORD_FILE_BYTES, "publication records file exceeds receiver capacity")
     for record in records:
         if record["op"] != "upsert":
             continue
         for entry in record["case"]["images"]:
             name = entry["path"]
+            if name not in refs:
+                source = _file(locations[record["case_id"]], name)
+                _require(source.is_file() and 0 < source.stat().st_size <= MAX_IMAGE_BYTES, "missing/oversized image")
+                size += source.stat().st_size
+                sources[name] = source
             refs.add(name)
-            target = stage / name
-            if not target.exists():
-                data = (locations[record["case_id"]] / name).read_bytes()
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
+            _require(size <= publication_package_budget(), "publication checkpoint exceeds image budget")
+    # Budget the merged checkpoint before copying its historical image set.
+    for name, source in sources.items():
+        target = _file(stage, name)
+        if not target.exists():
+            data = source.read_bytes()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
     # Omitted/withdrawn earlier records must not leave unreferenced staged files.
     for path in (stage / "images").glob("*"):
         if path.relative_to(stage).as_posix() not in refs:
             path.unlink()
-    _require(sum((stage / name).stat().st_size for name in refs) <= MAX_PACKAGE_BYTES,
+    _require(sum((stage / name).stat().st_size for name in refs) <= publication_package_budget(),
              "publication checkpoint exceeds image budget")
 
 
@@ -239,14 +303,17 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
     _file(root, ".workbench/staging")  # Recheck after creating parent components.
     with tempfile.TemporaryDirectory(prefix="omni-publish-", dir=stage_parent) as directory:
         stage = Path(directory)
-        _require(not stage.is_symlink() and stage.resolve().is_relative_to(stage_parent.resolve()),
+        _require(not stage.is_symlink() and _resolved(stage).is_relative_to(_resolved(stage_parent)),
                  "publication staging escaped its data volume")
-        records, image_bytes = [], 0
+        records, image_bytes, image_paths = [], 0, set()
         for asset in assets:
             record = make_record(_prepare_asset(asset, stage))
             records.append(record)
-            image_bytes += (stage / record["case"]["images"][0]["path"]).stat().st_size
-            _require(image_bytes <= MAX_PACKAGE_BYTES, "publication image budget exceeded")
+            path = record["case"]["images"][0]["path"]
+            if path not in image_paths:
+                image_bytes += (stage / path).stat().st_size
+                image_paths.add(path)
+            _require(image_bytes <= publication_package_budget(), "publication image budget exceeded")
         _require(len({record["case_id"] for record in records}) == len(records),
                  "duplicate asset in publication")
         with _lock(root / ".workbench"):
@@ -288,6 +355,11 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
             # Preparing/copying image bytes can take time. Re-read operator
             # policy inside the publication lock, after preparation and directly
             # before creating any new signed files.
+            # A full checkpoint includes historical records/images, not only
+            # this tick's selected batch. Never sign an unreceivable final set.
+            capacity = release_capacity(records, stage, max_package_bytes=publication_package_budget())
+            _require(capacity["record_bytes"] <= RECEIVER_RECORD_FILE_BYTES,
+                     "publication records file exceeds receiver capacity")
             if before_sign is not None:
                 before_sign()
             publish_release(
@@ -296,6 +368,7 @@ def publish_assets(root: Path, assets: list[dict], actor: str, *, publication_id
                 kind=kind, parent_release_id=parent,
                 taxonomy_version=TAXONOMY_VERSION,
                 recipient=recipient,
+                max_package_bytes=capacity["max_package_bytes"],
             )
             manifest_sha256 = digest((root / "releases" / release_id / "manifest.json").read_bytes())
     return {"version": release_id, "release_id": release_id, "sequence": sequence,

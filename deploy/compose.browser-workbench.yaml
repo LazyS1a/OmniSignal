@@ -1,0 +1,29 @@
+# Overlay only; merge after compose.workbench.yaml and existing deployment overrides.
+# It does not contain quotas, plans, model credentials, publication or rights changes.
+services:
+  workbench:
+    image: ${OMNISIGNAL_BROWSER_IMAGE:?Set the verified immutable browser runtime image}
+    user: "${OMNISIGNAL_BROWSER_UID:?Match existing data owner UID}:${OMNISIGNAL_BROWSER_GID:?Match existing data owner GID}"
+    init: true
+    environment:
+      OMNISIGNAL_WORKBENCH_BROWSER_CONFIG: /run/omnisignal/browser-config.json
+      HOME: /tmp/omnisignal-home
+    volumes:
+      - type: bind
+        source: ${OMNISIGNAL_BROWSER_CONFIG:?Set reviewed absolute config path; use empty sources until acceptance}
+        target: /run/omnisignal/browser-config.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${OMNISIGNAL_BROWSER_SESSIONS:?Set dedicated private sessions directory}
+        target: /app/browser-sessions
+        bind: {create_host_path: false}
+    mem_limit: 1536m
+    cpus: 1.25
+    shm_size: 256m
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      # no-new-privileges:true is inherited from compose.workbench.yaml.
+      - seccomp=${OMNISIGNAL_BROWSER_SECCOMP:?Set reviewed Playwright Docker seccomp profile file}

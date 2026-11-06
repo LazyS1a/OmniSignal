@@ -97,12 +97,12 @@ def test_concurrent_preparation_uses_distinct_directories_and_leaves_no_stage(pu
     monkeypatch.setattr(publishing, "_prepare_asset", synchronize)
     def publish(item):
         try:outcomes.append(publishing.publish_assets(root, [item], "synthetic-operator"))
-        except KnowledgeError as error:outcomes.append(error)
+        except Exception as error:outcomes.append(error)
     threads = [threading.Thread(target=publish, args=(item,)) for item in [first, second_asset(first)]]
     for thread in threads:thread.start()
     for thread in threads:thread.join(timeout=15)
     assert all(not thread.is_alive() for thread in threads)
-    assert len(stages) == 2 and stages[0] != stages[1]
+    assert len(stages) == 2 and stages[0] != stages[1], [(type(o).__name__, str(o)) for o in outcomes if isinstance(o, Exception)]
     assert all(not stage.exists() for stage in stages)
     assert len(outcomes) == 2 and any(isinstance(outcome, dict) for outcome in outcomes)
-    assert all(isinstance(outcome, dict) or "locked" in str(outcome) for outcome in outcomes)
+    assert all(isinstance(outcome, dict) or isinstance(outcome, KnowledgeError) and "locked" in str(outcome) for outcome in outcomes)

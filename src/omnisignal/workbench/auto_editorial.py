@@ -17,7 +17,7 @@ import re
 import threading
 
 from omnisignal.knowledge.release import KnowledgeError, _lock, read_latest
-from .publishing import publish_store_assets, publication_snapshot_ids
+from .publishing import publish_store_assets, publication_snapshot_ids, select_capacity_batch, CAPACITY_FAILURES
 from .review import apply_automated_review, fresh_review, validate_automated_quality
 from .store import Conflict, asset_row_consistent, encode, require, stamp
 from .taxonomy import fresh_taxonomy
@@ -328,6 +328,17 @@ class AutoEditorial:
                 delivery_allowed = False
                 result["delivery_budget"] = {"status": "unavailable", "receipt_status": "unconfirmed"}
                 reasons["receiver_receipt_required"] += 1
+            # Only unsigned/unfrozen candidates may be split. Recovery retains
+            # its exact membership, even after a capacity setting is lowered.
+            if delivery_allowed and frozen_batch is None:
+                try:
+                    publishable, capacity = select_capacity_batch(self.store, publishable)
+                    result["publication_capacity"] = capacity
+                    reasons["publication_capacity_deferred"] += capacity["deferred"]
+                except (Conflict, KnowledgeError, OSError, ValueError, KeyError, TypeError):
+                    delivery_allowed = False
+                    reasons["publication_capacity_unavailable"] += 1
+                    result["publication_capacity"] = {"status": "unavailable"}
             # Commit batch membership before any signature. A later tick first
             # reconciles that same batch even if more images arrived meanwhile.
             with self.store.db() as db:
@@ -352,7 +363,13 @@ class AutoEditorial:
                         db.execute("DELETE FROM meta WHERE key=? AND value=?", (batch_key, encode(batch)))
                     result["releases"].append(receipt)
                     result["published"] = 0 if receipt.get("replayed") else len(batch)
-                except (Conflict, KnowledgeError, OSError, ValueError, TypeError):
+                except KnowledgeError as error:
+                    if str(error) in CAPACITY_FAILURES:
+                        reasons["publication_capacity_exceeded"] += len(batch)
+                        result["publication_capacity"] = {"status": "blocked", "reason": "final_release_capacity_exceeded"}
+                    else:
+                        reasons["publication_blocked"] += len(batch)
+                except (Conflict, OSError, ValueError, TypeError):
                     reasons["publication_blocked"] += len(batch)
         result["blocked_reasons"] = dict(reasons)
         result["blocked"] = sum(reasons.values())

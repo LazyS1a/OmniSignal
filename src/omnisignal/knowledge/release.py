@@ -145,6 +145,23 @@ def _relative(value: object) -> str:
     return str(path)
 
 
+def _resolved(path: Path) -> Path:
+    """Compare equivalent Win32/extended paths without relaxing containment.
+
+    Concurrent directory creation can make Windows realpath return an extended
+    prefix for just one operand. Normalize only standard drive and UNC forms;
+    arbitrary device namespaces stay distinct and cannot pass a root boundary.
+    """
+    resolved = path.resolve()
+    value = str(resolved)
+    if os.name == "nt":
+        if value.startswith("\\\\?\\UNC\\"):
+            return Path("\\\\" + value[8:])
+        if re.match(r"^\\\\\?\\[A-Za-z]:\\", value):
+            return Path(value[4:])
+    return resolved
+
+
 def _file(root: Path, relative: str) -> Path:
     relative = _relative(relative)
     _require(not root.is_symlink(), "symlink root forbidden")
@@ -153,7 +170,7 @@ def _file(root: Path, relative: str) -> Path:
         if part == root.parent:
             break
         _require(not part.is_symlink(), "symlink forbidden")
-    _require(candidate.resolve().is_relative_to(root.resolve()), "path escapes root")
+    _require(_resolved(candidate).is_relative_to(_resolved(root)), "path escapes root")
     return candidate
 
 
@@ -502,7 +519,30 @@ def materialize_release(root: Path | str, release_id: str | None = None) -> dict
     return cases
 
 
-def publish_release(*, root: Path | str, release_id: str, sequence: int, records: list[dict], asset_root: Path | str, private_key: Ed25519PrivateKey, key_id: str, kind: str = "full", parent_release_id: str | None = None, taxonomy_version: str = "1", created_at: str | None = None, recipient=None) -> dict:
+def release_capacity(records: list[dict], asset_root: Path | str, *, max_package_bytes=None) -> dict:
+    """Unsigned inventory preflight; final staged bytes are checked again below."""
+    limit = MAX_PACKAGE_BYTES if max_package_bytes is None else max_package_bytes
+    _require(type(limit) is int and 0 < limit <= MAX_PACKAGE_BYTES, "invalid package byte budget")
+    _require(isinstance(records, list) and len(records) <= MAX_RECORDS, "invalid records")
+    record_bytes, refs = 0, set()
+    for record in records:
+        refs |= _record(record)
+        length = len(canonical(record))
+        _require(length <= MAX_RECORD_BYTES, "oversized record")
+        record_bytes += length + 1
+        _require(record_bytes <= limit, "package size limit: publication byte budget exceeded")
+    image_bytes = 0
+    for name in sorted(refs):
+        source = _file(Path(asset_root), name)
+        _require(source.is_file() and 0 < source.stat().st_size <= MAX_IMAGE_BYTES, "missing/oversized image")
+        image_bytes += source.stat().st_size
+        _require(record_bytes + image_bytes <= limit, "package size limit: publication byte budget exceeded")
+    return {"records_count": len(records), "record_bytes": record_bytes,
+            "image_bytes": image_bytes, "package_bytes": record_bytes + image_bytes,
+            "max_package_bytes": limit}
+
+
+def publish_release(*, root: Path | str, release_id: str, sequence: int, records: list[dict], asset_root: Path | str, private_key: Ed25519PrivateKey, key_id: str, kind: str = "full", parent_release_id: str | None = None, taxonomy_version: str = "1", created_at: str | None = None, recipient=None, max_package_bytes=None) -> dict:
     root, asset_root = Path(root), Path(asset_root)
     _identifier(release_id)
     recipient = validate_library_recipient(recipient) if recipient is not None else None
@@ -551,6 +591,7 @@ def publish_release(*, root: Path | str, release_id: str, sequence: int, records
             if historical:
                 previous, _ = historical
                 _require(record["revision"] > previous["revision"] or record == previous, "case revision conflict/rollback")
+        capacity = release_capacity(records, asset_root, max_package_bytes=max_package_bytes)
         stage = Path(tempfile.mkdtemp(prefix=".staging-", dir=root))
         try:
             raw = b"".join(canonical(r) + b"\n" for r in records)
@@ -565,6 +606,10 @@ def publish_release(*, root: Path | str, release_id: str, sequence: int, records
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(data)
             files = [{"path": path.relative_to(stage).as_posix(), "size": path.stat().st_size, "sha256": digest(path.read_bytes())} for path in sorted(stage.rglob("*")) if path.is_file()]
+            # Validate the exact final inventory before invoking the signing key.
+            # Source files may have changed since the early stat-based preflight.
+            _require(sum(entry["size"] for entry in files) <= capacity["max_package_bytes"],
+                     "package size limit: publication byte budget exceeded")
             file_hashes = {entry["path"]: entry["sha256"] for entry in files}
             for record in records:
                 historical = history.get(record["case_id"])
@@ -577,6 +622,11 @@ def publish_release(*, root: Path | str, release_id: str, sequence: int, records
             payload = {"schema_version": 2 if recipient is not None else 1, "release_id": release_id, "sequence": sequence, "kind": kind, "parent_release_id": parent_release_id, "created_at": created_at or utc_stamp(), "taxonomy_version": taxonomy_version, "records_count": len(records), "files": files}
             if recipient is not None:
                 payload["recipient"] = recipient
+            # Ed25519 signatures encode to 88 base64 characters. Check the final
+            # envelope plus _atomic_json's trailing newline, without calling the
+            # key just to discover that the serialized file is one byte too big.
+            _require(len(canonical({**payload, "key_id": _identifier(key_id), "signature": "A" * 88})) + 1 <= MAX_RECORD_BYTES,
+                     "publication manifest exceeds size limit")
             manifest = _signed(payload, private_key, key_id)
             _atomic_json(stage / "manifest.json", manifest)
             verify_release(stage, {key_id: private_key.public_key()})
@@ -622,7 +672,7 @@ def publish_withdrawals(*, root: Path | str, sequence: int, case_ids: list[str],
 
 def load_private_key(path: Path | str, root: Path | str) -> Ed25519PrivateKey:
     path, root = Path(path), Path(root)
-    _require(not path.resolve().is_relative_to(root.resolve()), "signing private key must be outside publication root")
+    _require(not _resolved(path).is_relative_to(_resolved(root)), "signing private key must be outside publication root")
     _require(path.is_file() and not path.is_symlink() and path.stat().st_size <= 16384, "invalid private key file")
     key = serialization.load_pem_private_key(path.read_bytes(), password=None)
     _require(isinstance(key, Ed25519PrivateKey), "Ed25519 key required")

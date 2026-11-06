@@ -208,7 +208,7 @@ class _PlaywrightBrowser:
         self.runtime = sync_playwright().start()
         try:
             self.context = self.runtime.chromium.launch_persistent_context(
-                str(profile_dir / "chromium"), headless=headless,
+                str(profile_dir / "chromium"), headless=headless, chromium_sandbox=True,
                 service_workers="block", accept_downloads=False,
                 args=["--disable-background-networking", "--disable-component-update", "--disable-sync"],
             )

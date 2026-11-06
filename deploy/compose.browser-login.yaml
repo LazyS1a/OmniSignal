@@ -1,0 +1,32 @@
+# Standalone file. Run only for an operator login; never merge this into the app stack.
+services:
+  browser-login:
+    image: ${OMNISIGNAL_BROWSER_DESKTOP_IMAGE:?Set verified desktop image built from same runtime source}
+    user: "${OMNISIGNAL_BROWSER_UID:?Match dedicated profile owner UID}:${OMNISIGNAL_BROWSER_GID:?Match dedicated profile owner GID}"
+    init: true
+    restart: "no"
+    stdin_open: true
+    tty: true
+    ports:
+      - "127.0.0.1:6080:6080"
+    environment:
+      HOME: /tmp/omnisignal-home
+    volumes:
+      - type: bind
+        source: ${OMNISIGNAL_BROWSER_SESSIONS:?Set dedicated private sessions directory}
+        target: /app/browser-sessions
+        bind: {create_host_path: false}
+    command: ["python", "/app/scripts/browser_login_desktop.py", "--profile-dir", "/app/browser-sessions/pinterest", "--max-seconds", "1200"]
+    read_only: true
+    mem_limit: 1536m
+    cpus: 1.0
+    shm_size: 256m
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=${OMNISIGNAL_BROWSER_SECCOMP:?Set reviewed Playwright Docker seccomp profile file}
+    logging:
+      driver: json-file
+      options: {max-size: "2m", max-file: "1"}

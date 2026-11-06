@@ -153,9 +153,23 @@ def _document(document):
     if size > MAX_HTML_BYTES:
         raise SourceAdapterError("document_too_large")
     try:
-        return html.fromstring(document)
+        doc = html.fromstring(document)
     except (ValueError, html.etree.ParserError):
         raise SourceAdapterError("invalid_document") from None
+    # A successful HTTP response can still be an access-verification shell.
+    # These two structural signatures were observed in the saved Zcool/Huaban
+    # responses. Do not execute their scripts, extract challenge fields, or
+    # misreport the shell as a changed project selector. Plain article text
+    # mentioning a CAPTCHA must not trigger this check.
+    names = {value.lower() for value in doc.xpath("//meta/@name")}
+    aliyun_shell = {"aliyun_waf_aa", "aliyun_waf_bb"}.issubset(names)
+    script_texts = doc.xpath("//script[not(@src)]/text()")
+    edgeone_shell = (not doc.xpath("//main|//article|//a[@href]|//img[@src]")
+                    and any("EO_Bot_Ssid=" in script and "__tst_status=" in script
+                            for script in script_texts))
+    if aliyun_shell or edgeone_shell:
+        raise SourceAdapterError("access_barrier")
+    return doc
 
 
 def discover_projects(source, document, *, listing_url=None, limit=80):

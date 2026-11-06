@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "sources": {
+    "pinterest": {
+      "profile_dir": "/app/browser-sessions/pinterest",
+      "listing_url": "https://www.pinterest.com/search/pins/?q=graphic%20design",
+      "headless": true,
+      "max_scrolls": 3,
+      "max_requests": 120,
+      "max_seconds": 300
+    }
+  }
+}

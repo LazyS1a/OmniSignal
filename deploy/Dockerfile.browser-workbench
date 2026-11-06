@@ -1,0 +1,45 @@
+# Build frontend/dist first. A normal deployment must bind the final source SHA.
+# Registry digests read on 2026-11-06; runtime uses Python 3.12 and locked uv.
+ARG PYTHON_IMAGE=python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.8@sha256:d1cbaeadc234fe19c0d93daabcf5e98738cd93c6d1dd4918ef6aa30735feb23a
+FROM ${UV_IMAGE} AS uv
+FROM ${PYTHON_IMAGE} AS runtime
+COPY --from=uv /uv /uvx /usr/local/bin/
+ARG OMNISIGNAL_UID=1000
+ARG OMNISIGNAL_GID=1000
+ARG SOURCE_COMMIT
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 UV_PROJECT_ENVIRONMENT=/opt/venv \
+    PATH="/opt/venv/bin:$PATH" PYTHONPATH=/app/src PLAYWRIGHT_BROWSERS_PATH=/opt/playwright \
+    HOME=/tmp/omnisignal-home OMNISIGNAL_SOURCE_COMMIT=${SOURCE_COMMIT}
+WORKDIR /app
+COPY pyproject.toml uv.lock ./
+RUN python -c "import os,re; assert re.fullmatch('[0-9a-f]{40}',os.environ['OMNISIGNAL_SOURCE_COMMIT']), 'full_source_commit_required'" \
+    && uv sync --frozen --no-dev --no-install-project --extra browser \
+    && python -m playwright install --with-deps chromium \
+    && test "$OMNISIGNAL_UID" -ge 100 && test "$OMNISIGNAL_GID" -ge 100 \
+    && if getent passwd "$OMNISIGNAL_UID" >/dev/null; then echo 'requested_uid_already_exists' >&2; exit 1; fi \
+    && if ! getent group "$OMNISIGNAL_GID" >/dev/null; then groupadd --gid "$OMNISIGNAL_GID" omnisignal; fi \
+    && useradd --uid "$OMNISIGNAL_UID" --gid "$OMNISIGNAL_GID" --no-create-home --home-dir /tmp/omnisignal-home omnisignal \
+    && test "$(id -u omnisignal)" = "$OMNISIGNAL_UID" && test "$(id -g omnisignal)" = "$OMNISIGNAL_GID" \
+    && chmod -R a+rX /opt/playwright
+COPY src/omnisignal ./src/omnisignal
+COPY governance/source_registry.yaml ./governance/source_registry.yaml
+COPY frontend/dist ./frontend/dist
+COPY scripts/pinterest_browser_session.py scripts/browser_runtime_smoke.py ./scripts/
+RUN mkdir -p /app/workbench-data /app/knowledge /app/browser-sessions \
+    && chown -R "$OMNISIGNAL_UID:$OMNISIGNAL_GID" /app
+USER omnisignal
+LABEL org.opencontainers.image.revision=${SOURCE_COMMIT}
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=3)"
+CMD ["uvicorn", "omnisignal.workbench.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-graceful-shutdown", "180"]
+
+# Optional human-operated desktop. Never mount app data, credentials or Docker socket.
+FROM runtime AS desktop
+USER root
+RUN apt-get update && apt-get install --no-install-recommends -y xvfb x11vnc novnc websockify openbox \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/browser_login_desktop.py ./scripts/
+USER omnisignal
+HEALTHCHECK NONE
+CMD ["python", "/app/scripts/browser_login_desktop.py", "--profile-dir", "/app/browser-sessions/pinterest"]

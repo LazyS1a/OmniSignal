@@ -49,7 +49,7 @@ def login(directory):
             # Normal visible browser. No imported cookies, fingerprint changes,
             # proxy rotation, stealth options, CDP attachment or login automation.
             context = runtime.chromium.launch_persistent_context(str(chromium), headless=False,
-                accept_downloads=False)
+                chromium_sandbox=True, accept_downloads=False)
             try:
                 page = context.new_page()
                 for previous in context.pages:
