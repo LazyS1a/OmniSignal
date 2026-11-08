@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from omnisignal.knowledge.release import _lock
 from omnisignal.workbench.browser_collection import BrowserCollectionError, prepare_profile
+from omnisignal.workbench.project_browser import SOURCES as PROJECT_SOURCES, prepare_project_profile
 
 SOURCE_URLS = {
     "pinterest": "https://www.pinterest.com/",
@@ -25,8 +26,10 @@ SOURCE_URLS = {
 }
 
 
-def _profile(directory):
-    root = prepare_profile(directory)
+def _profile(directory, source="pinterest"):
+    if source not in SOURCE_URLS:
+        raise BrowserCollectionError("invalid_config")
+    root = prepare_project_profile(directory, source) if source in PROJECT_SOURCES else prepare_profile(directory)
     chromium = root / "chromium"
     # The marker only establishes ownership of root. A nested link must never
     # redirect the actual browser into an existing personal user-data directory.
@@ -37,8 +40,8 @@ def _profile(directory):
     return root, chromium
 
 
-def prepare(directory):
-    root, _ = _profile(directory)
+def prepare(directory, source="pinterest"):
+    root, _ = _profile(directory, source)
     with _lock(root):
         return {"state": "profile_prepared", "playwright_installed": importlib.util.find_spec("playwright") is not None,
                 "browser_started": False, "login_verified": False, "collection_verified": False}
@@ -53,7 +56,7 @@ def login(directory, source="pinterest"):
         return {"state": "browser_unavailable", "browser_started": False}, 2
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-    root, chromium = _profile(directory)
+    root, chromium = _profile(directory, source)
     with _lock(root):
         with sync_playwright() as runtime:
             # Normal visible browser. No imported cookies, fingerprint changes,
@@ -94,7 +97,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.action == "prepare":
-            result, code = prepare(args.profile_dir), 0
+            result, code = prepare(args.profile_dir, args.source), 0
         else:
             result, code = login(args.profile_dir, args.source)
     except BrowserCollectionError as error:

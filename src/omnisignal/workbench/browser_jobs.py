@@ -13,6 +13,8 @@ from pathlib import Path
 
 from . import source_adapters
 
+BROWSER_SOURCES = frozenset({"pinterest", "huaban", "zcool", "behance"})
+
 CONFIG_ENV = "OMNISIGNAL_WORKBENCH_BROWSER_CONFIG"
 CONFIG_FIELDS = {"profile_dir", "listing_url", "headless", "max_scrolls", "max_requests", "max_seconds", "resource_paths"}
 CONTROL_ERRORS = {"paused", "budget_exhausted", "worker_stopped", "request_blocked", "source_quota_reached", "request_limit", "time_limit", "profile_busy"}
@@ -31,13 +33,19 @@ def browser_config(source):
         if not isinstance(data, dict) or set(data) != {"version", "sources"} or type(data["version"]) is not int or data["version"] != 1:
             raise ValueError()
         sources = data["sources"]
-        if not isinstance(sources, dict) or set(sources) - {"pinterest"}:
+        if not isinstance(sources, dict) or set(sources) - BROWSER_SOURCES:
             raise ValueError()
-        for spec in sources.values():
+        profiles = set()
+        configs = {}
+        for source_id, spec in sources.items():
             if not isinstance(spec, dict) or set(spec) - CONFIG_FIELDS or not {"profile_dir", "listing_url"} <= set(spec):
                 raise ValueError()
             if not isinstance(spec["profile_dir"], str) or not Path(spec["profile_dir"]).is_absolute():
                 raise ValueError()
+            profile = os.path.normcase(str(Path(spec["profile_dir"]).resolve()))
+            if profile in profiles:
+                raise ValueError()
+            profiles.add(profile)
             if not isinstance(spec["listing_url"], str) or len(spec["listing_url"]) > 4096:
                 raise ValueError()
             if "headless" in spec and type(spec["headless"]) is not bool:
@@ -45,15 +53,20 @@ def browser_config(source):
             for key, floor, ceiling in (("max_scrolls", 0, 10), ("max_requests", 1, 500), ("max_seconds", 5, 300)):
                 if key in spec and (type(spec[key]) is not int or not floor <= spec[key] <= ceiling):
                     raise ValueError()
-        if source not in sources:
-            return None
-        # The provider is the authority for URL and subresource scope validation.
-        from .browser_collection import BrowserCollectionConfig
-        spec = dict(sources[source])
-        spec["profile_dir"] = Path(spec["profile_dir"])
-        if "resource_paths" in spec:
-            spec["resource_paths"] = tuple(tuple(entry) for entry in spec["resource_paths"])
-        return BrowserCollectionConfig(**spec)
+            # Each provider validates its own listing and subresource scope.
+            values = dict(spec)
+            values["profile_dir"] = Path(values["profile_dir"])
+            if "resource_paths" in values:
+                if not isinstance(values["resource_paths"], list):
+                    raise ValueError()
+                values["resource_paths"] = tuple(tuple(entry) for entry in values["resource_paths"])
+            if source_id == "pinterest":
+                from .browser_collection import BrowserCollectionConfig
+                configs[source_id] = BrowserCollectionConfig(**values)
+            else:
+                from .project_browser import ProjectBrowserConfig
+                configs[source_id] = ProjectBrowserConfig(source_id=source_id, **values)
+        return configs.get(source)
     except (OSError, UnicodeError, ValueError, TypeError, KeyError):
         raise ValueError("browser_config_invalid") from None
 
@@ -148,7 +161,12 @@ def run_browser_job(store, plan, reserve, fetcher, stopping, *, provider_factory
             if (cursor.state["discovered_at"] is not None and cursor.state["resume_cursor"] is None
                     and store.clock() - cursor.state["discovered_at"] < 86400):
                 return {"status": "ok", "reason": "本轮已处理可见项目；尚未验证后续分页，保留进度等待下次检查。", "imported": 0}
-        provider = (provider_factory or PinterestBrowserProvider)(config, reserve,
+        if site == "pinterest":
+            default_provider = PinterestBrowserProvider
+        else:
+            from .project_browser import ProjectBrowserProvider
+            default_provider = ProjectBrowserProvider
+        provider = (provider_factory or default_provider)(config, reserve,
             getattr(fetcher, "before_browser_request", fetcher.check_access),
             image_fetcher=lambda url: fetcher.get(url, image=True))
         provider.open()

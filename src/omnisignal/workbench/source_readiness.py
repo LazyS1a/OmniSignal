@@ -42,7 +42,7 @@ def source_readiness(source):
     verified = source in _ids("OMNISIGNAL_WORKBENCH_VALIDATED_SOURCE_IDS")
     if not verified:
         return {"verified": False, "state": "source_not_validated", "reasons": ["此来源尚未完成运营采集验收"]}
-    if source == "pinterest":
+    if source in {"pinterest", "huaban", "zcool", "behance"}:
         from .browser_jobs import browser_config
         try:
             configured = browser_config(source)

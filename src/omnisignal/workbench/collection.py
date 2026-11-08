@@ -367,7 +367,12 @@ class WorkbenchCollector:
                 raise FetchError(readiness["state"])
             config = SOURCE_CONFIGS[site]
             if readiness.get("transport") == "browser":
-                config = {**config, "hosts": [*config["hosts"], "s.pinimg.com"]}
+                from .browser_jobs import browser_config
+                browser_scope = browser_config(site)
+                if browser_scope is None:
+                    raise FetchError("browser_session_not_configured")
+                config = {**config, "hosts": list(dict.fromkeys([*config["hosts"],
+                    *(host for host, _ in browser_scope.resource_paths)]))}
             fetcher = self._build_fetcher(site, config, reserve)
             if isinstance(fetcher, (BudgetedFetcher, POTWTransport)):
                 fetcher.stop_event = self._stopping

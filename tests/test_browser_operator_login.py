@@ -92,6 +92,30 @@ def test_sources_keep_separate_profiles_and_reject_unknown_source(tmp_path, brow
     assert len(seen["launch"]) == 2 and not (tmp_path / "unknown").exists()
 
 
+@pytest.mark.parametrize("source", ("huaban", "zcool", "behance"))
+def test_prepared_and_logged_profile_is_accepted_by_same_source_collector(tmp_path, browser, source):
+    from omnisignal.workbench.project_browser import prepare_project_profile
+    directory = tmp_path / source
+    assert session.prepare(directory, source)["login_verified"] is False
+    assert session.login(directory, source)[1] == 0
+    assert prepare_project_profile(directory, source) == directory
+    marker = directory / ".omnisignal-project-profile.json"
+    before = marker.read_bytes()
+    other = "zcool" if source != "zcool" else "huaban"
+    with pytest.raises(session.BrowserCollectionError, match="profile_unmanaged"):
+        session._profile(directory, other)
+    assert marker.read_bytes() == before
+
+
+def test_legacy_profile_is_preserved_instead_of_implicitly_reassigned(tmp_path):
+    directory = tmp_path / "legacy-zcool"
+    session.prepare(directory)
+    before = {p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()}
+    with pytest.raises(session.BrowserCollectionError, match="profile_unmanaged"):
+        session.prepare(directory, "zcool")
+    assert {p.name: p.read_bytes() for p in directory.iterdir() if p.is_file()} == before
+
+
 def test_login_requires_interactive_terminal_before_launch(tmp_path, browser, monkeypatch):
     seen, _ = browser
     monkeypatch.setattr(session.sys, "stdin", SimpleNamespace(isatty=lambda: False))
