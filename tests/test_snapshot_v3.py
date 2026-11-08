@@ -311,16 +311,20 @@ def test_frozen_request_must_be_present_in_catalog(sample):
         v3.publish_snapshot(**{**sample, "records": sample["records"][:1], "requested_records": sample["records"][1:]})
 
 
-def test_animated_image_not_accepted_as_static_object(sample):
+@pytest.mark.parametrize("image_format,extension,mime", [("PNG", "png", "image/png"), ("WEBP", "webp", "image/webp")])
+def test_animated_image_not_accepted_as_static_object(sample, image_format, extension, mime):
     first, second = Image.new("RGB", (8, 8), "red"), Image.new("RGB", (8, 8), "blue")
-    source = sample["root"].parent/"animated.webp"
-    first.save(source, "WEBP", save_all=True, append_images=[second], duration=200, loop=0)
+    source = sample["root"].parent/("animated." + extension)
+    first.save(source, image_format, save_all=True, append_images=[second], duration=200, loop=0)
     sha = digest(source.read_bytes())
     case = deepcopy(sample["records"][0]["case"])
-    case["images"][0]["path"] = "images/"+sha+".webp"
+    case["images"][0]["path"] = "images/"+sha+"."+extension
     case["editorial"]["publication_use_basis"]["sha256"] = sha
     with pytest.raises(KnowledgeError, match="animated"):
         v3.publish_snapshot(**{**sample, "records": [make_record(case)], "asset_sources": {case["images"][0]["path"]: source}})
+    with pytest.raises(KnowledgeError, match="metadata"):
+        v3.validate_object(source.read_bytes(), {"path": case["images"][0]["path"], "sha256": sha,
+            "size": source.stat().st_size, "mime": mime, "width": 8, "height": 8})
 
 
 def test_image_extension_must_match_actual_mime(sample):

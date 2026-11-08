@@ -235,7 +235,9 @@ def validate_object(data, descriptor):
     _image(data)
     with Image.open(io.BytesIO(data)) as image:
         mime = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}[image.format]
-        _require(image.n_frames == 1 and mime == descriptor["mime"] and (image.width, image.height) == (descriptor["width"], descriptor["height"]),
+        # Pillow's single-frame JPEG decoder does not expose n_frames.
+        # Animated PNG/WebP decoders do, and must still report exactly one.
+        _require(getattr(image, "n_frames", 1) == 1 and mime == descriptor["mime"] and (image.width, image.height) == (descriptor["width"], descriptor["height"]),
                  "snapshot image metadata mismatch")
 
 
@@ -450,7 +452,7 @@ def publish_snapshot(*, root, release_id, records, asset_sources, private_key, k
             if sha not in distinct:
                 _image(data)
                 with Image.open(io.BytesIO(data)) as image:
-                    _require(image.n_frames == 1, "snapshot animated image forbidden")
+                    _require(getattr(image, "n_frames", 1) == 1, "snapshot animated image forbidden")
                     descriptor = {"sha256": sha, "size": len(data), "mime": {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}[image.format],
                                   "width": image.width, "height": image.height}
                 distinct[sha] = descriptor

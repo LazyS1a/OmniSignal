@@ -1,9 +1,11 @@
 """Snapshot integration through the real offline workbench and scoped HTTP feed."""
 import hashlib
+import io
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
+from PIL import Image
 
 from omnisignal.knowledge import snapshot_v3 as v3
 from omnisignal.knowledge.release import KnowledgeError, read_latest
@@ -39,6 +41,37 @@ def test_workbench_v3_accumulates_catalog_without_legacy_pointer_or_new_rights(s
     assert raw(store, item["id"])["permissions"]["display"] == "unknown"
     assert raw(store, item["id"])["permissions"]["export"] == "unknown"
     assert auto.tick()["published"] == 0
+
+
+@pytest.mark.parametrize("progressive", [False, True])
+def test_jpeg_snapshot_round_trip_through_verified_inventory_and_feed(setup, monkeypatch, progressive):
+    store, analysis, auto, provider, key = setup
+    monkeypatch.setenv(v3.ENABLE_ENV, "true")
+    target = enable_library(store, auto)
+    output = io.BytesIO()
+    Image.new("RGB", (64, 48), "green").save(output, "JPEG", progressive=progressive)
+    image_bytes = output.getvalue()
+    item = store.import_asset({"title": "Synthetic JPEG", "source_id": "potw",
+        "source_url": "https://example.invalid/synthetic/jpeg", "description": "Synthetic image only."}, image_bytes)
+    item, _ = complete(store, analysis, auto, item)
+    result = auto.tick()
+    assert result["published"] == 1 and provider.calls == 1
+    pointer = v3.read_snapshot_latest(target)
+    manifest = v3.read_manifest(target, pointer["release_id"], {"synthetic-key": key.public_key()})
+    records, images = v3.snapshot_inventory(target, manifest, verify_images=True)
+    assert len(records) == 1 and manifest["image_count"] == 1
+    assert {image["mime"] for image in images.values()} == {"image/jpeg"}
+    token = "synthetic-jpeg-feed-token-0000000000"
+    monkeypatch.setenv("OMNISIGNAL_KNOWLEDGE_READ_TOKEN_SHA256", hashlib.sha256(token.encode()).hexdigest())
+    app = FastAPI()
+    prefix = "/knowledge/v2/libraries/{library_id}"
+    app.include_router(router(store.root / "published", prefix=prefix, policy_loader=auto.configuration))
+    with TestClient(app) as client:
+        response = client.get("/knowledge/v2/libraries/" + RECIPIENT["library_id"] + "/snapshots/releases/"
+            + pointer["release_id"] + "/objects/" + hashlib.sha256(image_bytes).hexdigest(),
+            headers={"Authorization": "Bearer " + token})
+    assert response.status_code == 200 and response.content == image_bytes
+    assert auto.tick()["published"] == 0 and provider.calls == 1
 
 
 def test_v3_only_case_can_be_withdrawn_and_disabling_switch_keeps_history(setup, monkeypatch):
